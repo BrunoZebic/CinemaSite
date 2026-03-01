@@ -1,72 +1,152 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import InviteGateModal from "@/components/Access/InviteGateModal";
+import HostAuthInline from "@/components/Access/HostAuthInline";
 import ChatPanel from "@/components/Chat/ChatPanel";
 import Countdown from "@/components/Countdown";
+import HlsSyncPlayer from "@/components/Video/HlsSyncPlayer";
+import VideoSyncPlayer from "@/components/Video/VideoSyncPlayer";
+import type {
+  VideoSyncDebugState,
+  VideoSyncPlayerHandle,
+} from "@/components/Video/types";
 import {
-  computePremiereState,
-  formatPremiereDateTime,
-  type PremiereConfig,
-  type PremiereState,
-} from "@/lib/premiereConfig";
+  computePremierePhase,
+  getPhaseEndsAtUnixMs,
+  isChatOpenForPhase,
+} from "@/lib/premiere/phase";
+import type { PremierePhase, RoomBootstrap } from "@/lib/premiere/types";
+import { formatUnixDateTime } from "@/lib/premiereConfig";
+import type { ChannelHealthStatus } from "@/lib/chat/realtime";
 import { useMounted } from "@/lib/useMounted";
 
 type PremiereShellProps = {
   room: string;
-  config: PremiereConfig | null;
-  initialNowMs: number;
+  initialBootstrap: RoomBootstrap;
 };
 
-function stateClassName(state: PremiereState): string {
+const syncDebugEnabled = process.env.NEXT_PUBLIC_SYNC_DEBUG === "true";
+
+function stateClassName(state: PremierePhase): string {
   if (state === "WAITING") {
     return "state-waiting";
   }
 
-  if (state === "LIVE") {
+  if (state === "LIVE" || state === "DISCUSSION") {
     return "state-live";
   }
 
   return "state-ended";
 }
 
-export default function PremiereShell({
-  room,
-  config,
-  initialNowMs,
-}: PremiereShellProps) {
+function countdownLabelForPhase(phase: PremierePhase): string | null {
+  if (phase === "WAITING") {
+    return "Starts in";
+  }
+  if (phase === "LIVE") {
+    return "Silence in";
+  }
+  if (phase === "SILENCE") {
+    return "Discussion opens in";
+  }
+  if (phase === "DISCUSSION") {
+    return "Room closes in";
+  }
+  return null;
+}
+
+export default function PremiereShell({ room, initialBootstrap }: PremiereShellProps) {
   const mounted = useMounted();
-  const [nowMs, setNowMs] = useState(initialNowMs);
+  const videoRef = useRef<VideoSyncPlayerHandle | null>(null);
+  const reconnectAtomicRef = useRef(false);
+  const [bootstrap, setBootstrap] = useState(initialBootstrap);
+  const [serverOffsetMs, setServerOffsetMs] = useState(
+    initialBootstrap.serverNowUnixMs - Date.now(),
+  );
+  const [clockMs, setClockMs] = useState(() => Date.now());
   const [mobileChatOpen, setMobileChatOpen] = useState(false);
+  const [syncDebugState, setSyncDebugState] = useState<VideoSyncDebugState | null>(
+    null,
+  );
+  const [channelStatus, setChannelStatus] =
+    useState<ChannelHealthStatus>("DISCONNECTED");
+
+  const screening = bootstrap.screening;
+  const phase = useMemo<PremierePhase>(() => {
+    if (!screening) {
+      return "WAITING";
+    }
+    return computePremierePhase(clockMs + serverOffsetMs, screening);
+  }, [clockMs, screening, serverOffsetMs]);
+
+  const hasAccess = bootstrap.hasAccess;
+  const isHost = bootstrap.isHost;
+  const chatOpen = Boolean(screening && hasAccess && isChatOpenForPhase(phase));
+  const useHlsPlayer = screening?.videoProvider === "hls";
+
+  const refreshBootstrap = useCallback(async (): Promise<RoomBootstrap | null> => {
+    const response = await fetch(`/api/rooms/${room}/bootstrap`, {
+      cache: "no-store",
+    });
+    if (!response.ok) {
+      return null;
+    }
+
+    const payload = (await response.json()) as RoomBootstrap;
+    setBootstrap(payload);
+    setServerOffsetMs(payload.serverNowUnixMs - Date.now());
+    return payload;
+  }, [room]);
+
+  const refreshServerTime = useCallback(async () => {
+    const response = await fetch("/api/time", {
+      cache: "no-store",
+    });
+    if (!response.ok) {
+      return;
+    }
+    const payload = (await response.json()) as { serverNowUnixMs?: number };
+    if (typeof payload.serverNowUnixMs !== "number") {
+      return;
+    }
+    setServerOffsetMs(payload.serverNowUnixMs - Date.now());
+  }, []);
+
+  const handleChannelHealthy = useCallback(async () => {
+    if (reconnectAtomicRef.current) {
+      return;
+    }
+
+    reconnectAtomicRef.current = true;
+    try {
+      await refreshBootstrap();
+      await videoRef.current?.resyncToCanonicalTime();
+    } finally {
+      reconnectAtomicRef.current = false;
+    }
+  }, [refreshBootstrap]);
+
+  useEffect(() => {
+    const timer = window.setInterval(() => setClockMs(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, []);
 
   useEffect(() => {
     if (!mounted) {
       return;
     }
 
-    const timer = window.setInterval(() => setNowMs(Date.now()), 1000);
+    void refreshServerTime();
+    const timer = window.setInterval(() => {
+      void refreshServerTime();
+    }, 30_000);
     return () => window.clearInterval(timer);
-  }, [mounted]);
+  }, [mounted, refreshServerTime]);
 
-  const state = useMemo<PremiereState | null>(() => {
-    if (!config) {
-      return null;
-    }
-    return computePremiereState(nowMs, config);
-  }, [config, nowMs]);
-
-  const canSend = Boolean(config && state !== "ENDED");
-  const roomTitle = config ? config.title : `Room "${room}" not scheduled`;
-  const stateLabel = state ?? "WAITING";
-  const startLabel = config
-    ? mounted
-      ? formatPremiereDateTime(config.startAtIsoUtc)
-      : "Resolving local time..."
-    : null;
-  const endLabel = config
-    ? mounted
-      ? formatPremiereDateTime(config.endAtIsoUtc)
-      : "Resolving local time..."
-    : null;
+  const roomTitle = screening ? screening.title : `Room "${room}" not scheduled`;
+  const countdownTarget = screening ? getPhaseEndsAtUnixMs(phase, screening) : null;
+  const countdownLabel = countdownLabelForPhase(phase);
 
   return (
     <div className="premiere-page">
@@ -77,64 +157,61 @@ export default function PremiereShell({
           <p className="premiere-room">Room: {room}</p>
         </div>
         <div className="premiere-meta">
-          {config ? (
+          {screening ? (
             <>
-              <span className={`state-badge ${stateClassName(stateLabel)}`}>
-                {stateLabel}
-              </span>
-              {state === "WAITING" ? (
-                <Countdown targetIsoUtc={config.startAtIsoUtc} label="Starts in" />
+              <span className={`state-badge ${stateClassName(phase)}`}>{phase}</span>
+              {countdownTarget && countdownLabel ? (
+                <Countdown targetUnixMs={countdownTarget} label={countdownLabel} />
               ) : null}
-              {state === "LIVE" ? (
-                <Countdown targetIsoUtc={config.endAtIsoUtc} label="Ends in" />
-              ) : null}
-              <p className="premiere-time">Starts: {startLabel}</p>
-              <p className="premiere-time">Ends: {endLabel}</p>
+              <p className="premiere-time">
+                Starts:{" "}
+                {mounted
+                  ? formatUnixDateTime(screening.premiereStartUnixMs)
+                  : "Resolving local time..."}
+              </p>
+              <HostAuthInline
+                room={room}
+                isHost={isHost}
+                onSuccess={() => {
+                  void refreshBootstrap();
+                }}
+              />
             </>
           ) : (
-            <p className="premiere-time">No premiere config is scheduled yet.</p>
+            <p className="premiere-time">No screening is scheduled yet.</p>
           )}
         </div>
       </header>
 
       <div className="premiere-main">
         <section className="video-panel slide-in">
-          <h2 className="video-heading">Screen</h2>
-          {!config ? (
-            <div className="video-frame">
-              <p className="video-state">
-                This room has no active premiere config.
-                <br />
-                Try <strong>/premiere/demo</strong>.
-              </p>
-            </div>
-          ) : state === "WAITING" ? (
-            <div className="video-frame">
-              <p className="video-state">
-                Audience is assembling.
-                <br />
-                We open together at showtime.
-              </p>
-            </div>
-          ) : state === "LIVE" ? (
-            <div className="video-frame">
-              <p className="video-state">
-                Live now.
-                <br />
-                Week 1 placeholder panel for video player/embed.
-              </p>
-            </div>
+          {useHlsPlayer ? (
+            <HlsSyncPlayer
+              ref={videoRef}
+              room={room}
+              screening={screening}
+              phase={phase}
+              hasAccess={hasAccess}
+              serverOffsetMs={serverOffsetMs}
+              channelStatus={channelStatus}
+              finalManifestUrl={bootstrap.finalManifestUrl}
+              requiresPriming={bootstrap.requiresPriming}
+              playbackConfigError={bootstrap.playbackConfigError}
+              rehearsalScrubEnabled={bootstrap.rehearsalScrubEnabled}
+              onBootstrapRefresh={refreshBootstrap}
+              onDebugStateChange={setSyncDebugState}
+            />
           ) : (
-            <div className="video-frame">
-              <p className="video-state">
-                Thanks for attending tonight&apos;s premiere.
-                <br />
-                The room is closed.
-              </p>
-              <a className="ended-link" href="#">
-                Join discussion (stub)
-              </a>
-            </div>
+            <VideoSyncPlayer
+              ref={videoRef}
+              room={room}
+              screening={screening}
+              phase={phase}
+              hasAccess={hasAccess}
+              serverOffsetMs={serverOffsetMs}
+              channelStatus={channelStatus}
+              onDebugStateChange={setSyncDebugState}
+            />
           )}
         </section>
 
@@ -150,12 +227,17 @@ export default function PremiereShell({
             </button>
           </div>
           <ChatPanel
-            key={room}
+            key={`${room}:${hasAccess ? "access" : "locked"}`}
             room={room}
-            roomScheduled={Boolean(config)}
-            canSend={canSend}
-            slowModeSeconds={config?.slowModeSeconds ?? 60}
-            maxMessageChars={config?.maxMessageChars ?? 320}
+            roomScheduled={Boolean(screening)}
+            hasAccess={hasAccess}
+            isHost={isHost}
+            chatOpen={chatOpen}
+            phase={phase}
+            slowModeSeconds={screening?.slowModeSeconds ?? 60}
+            maxMessageChars={screening?.maxMessageChars ?? 320}
+            onChannelHealthy={handleChannelHealthy}
+            onChannelStatusChange={setChannelStatus}
           />
         </aside>
       </div>
@@ -176,6 +258,35 @@ export default function PremiereShell({
       >
         Chat
       </button>
+
+      <InviteGateModal
+        open={mounted && Boolean(screening) && !hasAccess}
+        room={room}
+        onSuccess={() => {
+          void refreshBootstrap();
+        }}
+      />
+
+      {syncDebugEnabled && syncDebugState ? (
+        <aside className="sync-debug-panel">
+          <p className="sync-debug-title">Sync Debug</p>
+          <p>phase: {syncDebugState.phase}</p>
+          <p>playerTime: {syncDebugState.playerTime.toFixed(2)}</p>
+          <p>targetTime: {syncDebugState.targetTime.toFixed(2)}</p>
+          <p>drift: {syncDebugState.drift.toFixed(3)}</p>
+          <p>channelStatus: {syncDebugState.channelStatus}</p>
+          <p>isDriftLoopActive: {String(syncDebugState.isDriftLoopActive)}</p>
+          <p>serverOffsetMs: {Math.round(syncDebugState.serverOffsetMs)}</p>
+          <p>readyState: {syncDebugState.readyState ?? "n/a"}</p>
+          <p>buffering: {String(syncDebugState.buffering ?? false)}</p>
+          <p>
+            lastResyncAt:{" "}
+            {syncDebugState.lastResyncAt
+              ? new Date(syncDebugState.lastResyncAt).toLocaleTimeString()
+              : "n/a"}
+          </p>
+        </aside>
+      ) : null}
     </div>
   );
 }

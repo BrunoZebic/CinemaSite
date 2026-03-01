@@ -1,100 +1,72 @@
-export type PremiereState = "WAITING" | "LIVE" | "ENDED";
-
-export interface PremiereConfig {
-  roomSlug: string;
-  title: string;
-  startAtIsoUtc: string;
-  endAtIsoUtc: string;
-  premiereNumber?: number;
-  slowModeSeconds: number;
-  maxMessageChars: number;
-}
+import type { ScreeningConfig } from "@/lib/premiere/types";
 
 const HOUR_MS = 60 * 60 * 1000;
 const DAY_MS = 24 * HOUR_MS;
 
-type RoomConfigSource = {
+type FallbackConfig = {
   title: string;
   premiereNumber?: number;
+  startOffsetMs: number;
+  filmDurationSec: number;
+  silenceDurationSec: number;
+  discussionDurationMin: number;
   slowModeSeconds: number;
   maxMessageChars: number;
-  startAtIsoUtc?: string;
-  endAtIsoUtc?: string;
-  startOffsetMs?: number;
-  durationMs?: number;
+  videoProvider: "vimeo" | "hls" | "none";
+  videoAssetId: string;
 };
 
-const ROOM_CONFIGS: Record<string, RoomConfigSource> = {
+const FALLBACK_CONFIGS: Record<string, FallbackConfig> = {
   demo: {
     title: "Premiere #1 - The Quiet Frame",
     premiereNumber: 1,
+    startOffsetMs: DAY_MS,
+    filmDurationSec: 20 * 60,
+    silenceDurationSec: 20,
+    discussionDurationMin: 45,
     slowModeSeconds: 60,
     maxMessageChars: 320,
-    startOffsetMs: DAY_MS,
-    durationMs: 2 * HOUR_MS,
+    videoProvider: "vimeo",
+    videoAssetId: "",
   },
   alt: {
     title: "Premiere #2 - Twilight Assembly",
     premiereNumber: 2,
+    startOffsetMs: 2 * DAY_MS,
+    filmDurationSec: 20 * 60,
+    silenceDurationSec: 20,
+    discussionDurationMin: 45,
     slowModeSeconds: 45,
     maxMessageChars: 320,
-    startOffsetMs: 2 * DAY_MS,
-    durationMs: 2 * HOUR_MS,
+    videoProvider: "vimeo",
+    videoAssetId: "",
   },
 };
 
-export function getPremiereConfig(room: string): PremiereConfig | null {
+export function getFallbackScreening(room: string): ScreeningConfig | null {
   const roomSlug = room.trim().toLowerCase();
-  const source = ROOM_CONFIGS[roomSlug];
+  const source = FALLBACK_CONFIGS[roomSlug];
   if (!source) {
     return null;
-  }
-
-  let startAtIsoUtc = source.startAtIsoUtc;
-  let endAtIsoUtc = source.endAtIsoUtc;
-
-  if (!startAtIsoUtc || !endAtIsoUtc) {
-    const startAtMs = Date.now() + (source.startOffsetMs ?? DAY_MS);
-    const endAtMs = startAtMs + (source.durationMs ?? 2 * HOUR_MS);
-    startAtIsoUtc = new Date(startAtMs).toISOString();
-    endAtIsoUtc = new Date(endAtMs).toISOString();
   }
 
   return {
     roomSlug,
     title: source.title,
     premiereNumber: source.premiereNumber,
-    startAtIsoUtc,
-    endAtIsoUtc,
+    premiereStartUnixMs: Date.now() + source.startOffsetMs,
+    filmDurationSec: source.filmDurationSec,
+    silenceDurationSec: source.silenceDurationSec,
+    discussionDurationMin: source.discussionDurationMin,
     slowModeSeconds: source.slowModeSeconds,
     maxMessageChars: source.maxMessageChars,
+    videoProvider: source.videoProvider,
+    videoAssetId: source.videoAssetId,
   };
 }
 
-export function computePremiereState(
-  nowMs: number,
-  config: PremiereConfig,
-): PremiereState {
-  const startAtMs = Date.parse(config.startAtIsoUtc);
-  const endAtMs = Date.parse(config.endAtIsoUtc);
-
-  if (Number.isNaN(startAtMs) || Number.isNaN(endAtMs)) {
-    return "WAITING";
-  }
-
-  if (nowMs < startAtMs) {
-    return "WAITING";
-  }
-
-  if (nowMs < endAtMs) {
-    return "LIVE";
-  }
-
-  return "ENDED";
-}
-
-export function formatPremiereDateTime(isoUtc: string): string {
-  const parsed = new Date(isoUtc);
+export function formatUnixDateTime(unixMs: number): string {
+  const parsed = new Date(unixMs);
   if (Number.isNaN(parsed.getTime())) {
     return "Invalid time";
   }

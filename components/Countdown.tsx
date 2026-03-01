@@ -4,16 +4,15 @@ import { useEffect, useMemo, useState } from "react";
 import { useMounted } from "@/lib/useMounted";
 
 type CountdownProps = {
-  targetIsoUtc: string;
+  targetUnixMs: number;
   label?: string;
 };
 
-function getRemainingMs(targetIsoUtc: string): number {
-  const targetMs = Date.parse(targetIsoUtc);
-  if (Number.isNaN(targetMs)) {
+function getRemainingMs(targetUnixMs: number): number {
+  if (!Number.isFinite(targetUnixMs)) {
     return 0;
   }
-  return Math.max(0, targetMs - Date.now());
+  return Math.max(0, targetUnixMs - Date.now());
 }
 
 function formatRemaining(remainingMs: number): string {
@@ -27,7 +26,7 @@ function formatRemaining(remainingMs: number): string {
   return `${padded(days)}d ${padded(hours)}h ${padded(minutes)}m ${padded(seconds)}s`;
 }
 
-export default function Countdown({ targetIsoUtc, label }: CountdownProps) {
+export default function Countdown({ targetUnixMs, label }: CountdownProps) {
   const mounted = useMounted();
   const [remainingMs, setRemainingMs] = useState(0);
 
@@ -37,13 +36,13 @@ export default function Countdown({ targetIsoUtc, label }: CountdownProps) {
     }
 
     const tick = () => {
-      setRemainingMs(getRemainingMs(targetIsoUtc));
+      setRemainingMs(getRemainingMs(targetUnixMs));
     };
 
     tick();
     const timer = window.setInterval(tick, 1000);
     return () => window.clearInterval(timer);
-  }, [mounted, targetIsoUtc]);
+  }, [mounted, targetUnixMs]);
 
   const formatted = useMemo(() => {
     if (!mounted) {

@@ -1,7 +1,6 @@
 import PremiereShell from "@/components/PremiereShell";
-import { getPremiereConfig } from "@/lib/premiereConfig";
-
-const SERVER_RENDER_EPOCH_MS = Date.now();
+import { cookies } from "next/headers";
+import { buildRoomBootstrap } from "@/lib/server/screenings";
 
 type PremiereRoomPageProps = {
   params: Promise<{
@@ -14,13 +13,16 @@ export default async function PremiereRoomPage({
 }: PremiereRoomPageProps) {
   const { room } = await params;
   const normalizedRoom = room.toLowerCase();
-  const config = getPremiereConfig(normalizedRoom);
+  const cookieStore = await cookies();
+  const cookieValues: Record<string, string | undefined> = {};
+
+  for (const cookie of cookieStore.getAll()) {
+    cookieValues[cookie.name] = cookie.value;
+  }
+
+  const initialBootstrap = await buildRoomBootstrap(normalizedRoom, cookieValues);
 
   return (
-    <PremiereShell
-      room={normalizedRoom}
-      config={config}
-      initialNowMs={SERVER_RENDER_EPOCH_MS}
-    />
+    <PremiereShell room={normalizedRoom} initialBootstrap={initialBootstrap} />
   );
 }

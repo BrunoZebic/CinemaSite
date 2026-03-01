@@ -9,6 +9,9 @@ type MessageListProps = {
   currentUserSignature: string | null;
   onReport: (message: ChatMessage) => void;
   onMute: (message: ChatMessage) => void;
+  onHostMute: (message: ChatMessage) => void;
+  onHostRemove: (message: ChatMessage) => void;
+  isHost: boolean;
 };
 
 function messageSignature(message: ChatMessage): string {
@@ -23,6 +26,9 @@ export default function MessageList({
   currentUserSignature,
   onReport,
   onMute,
+  onHostMute,
+  onHostRemove,
+  isHost,
 }: MessageListProps) {
   const endRef = useRef<HTMLDivElement | null>(null);
 
@@ -81,6 +87,24 @@ export default function MessageList({
                     onClick={() => onMute(message)}
                   >
                     Mute
+                  </button>
+                ) : null}
+                {isHost && !isSelf ? (
+                  <button
+                    className="message-action"
+                    type="button"
+                    onClick={() => onHostMute(message)}
+                  >
+                    Host Mute
+                  </button>
+                ) : null}
+                {isHost ? (
+                  <button
+                    className="message-action"
+                    type="button"
+                    onClick={() => onHostRemove(message)}
+                  >
+                    Remove
                   </button>
                 ) : null}
               </div>
