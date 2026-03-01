@@ -84,6 +84,9 @@ const HlsSyncPlayer = forwardRef<VideoSyncPlayerHandle, HlsSyncPlayerProps>(
     const finalManifestUrlRef = useRef(finalManifestUrl);
     const playPrimedRef = useRef(false);
     const bufferingRef = useRef(false);
+    const onBootstrapRefreshRef = useRef(onBootstrapRefresh);
+    const onDebugStateChangeRef = useRef(onDebugStateChange);
+    const channelStatusRef = useRef(channelStatus);
 
     const [isPlayerReady, setIsPlayerReady] = useState(false);
     const [isPrimed, setIsPrimed] = useState(false);
@@ -100,35 +103,48 @@ const HlsSyncPlayer = forwardRef<VideoSyncPlayerHandle, HlsSyncPlayerProps>(
       targetTime: 0,
       drift: 0,
     });
+    const driftDebugRef = useRef(driftDebug);
+    const readyStateRef = useRef(readyState);
 
     phaseRef.current = phase;
     hasAccessRef.current = hasAccess;
     serverOffsetRef.current = serverOffsetMs;
     screeningRef.current = screening;
     finalManifestUrlRef.current = finalManifestUrl;
+    onBootstrapRefreshRef.current = onBootstrapRefresh;
+    onDebugStateChangeRef.current = onDebugStateChange;
+    channelStatusRef.current = channelStatus;
+    driftDebugRef.current = driftDebug;
+    readyStateRef.current = readyState;
 
     const publishDebugState = useCallback(
       (patch?: Partial<VideoSyncDebugState>) => {
-        if (!onDebugStateChange) {
+        const onDebugStateChangeCurrent = onDebugStateChangeRef.current;
+        if (!onDebugStateChangeCurrent) {
           return;
         }
 
-        onDebugStateChange({
+        const currentDriftDebug = driftDebugRef.current;
+        onDebugStateChangeCurrent({
           phase: phaseRef.current,
-          playerTime: driftDebug.playerTime,
-          targetTime: driftDebug.targetTime,
-          drift: driftDebug.drift,
+          playerTime: currentDriftDebug.playerTime,
+          targetTime: currentDriftDebug.targetTime,
+          drift: currentDriftDebug.drift,
           isDriftLoopActive: isDriftLoopActiveRef.current,
           serverOffsetMs: serverOffsetRef.current,
           lastResyncAt: lastResyncAtRef.current,
-          channelStatus,
-          readyState,
+          channelStatus: channelStatusRef.current,
+          readyState: readyStateRef.current,
           buffering: bufferingRef.current,
           ...patch,
         });
       },
-      [channelStatus, driftDebug.drift, driftDebug.playerTime, driftDebug.targetTime, onDebugStateChange, readyState],
+      [],
     );
+
+    const setStatusIfChanged = useCallback((nextStatus: string) => {
+      setStatusText((current) => (current === nextStatus ? current : nextStatus));
+    }, []);
 
     const stopDriftLoop = useCallback(() => {
       if (driftLoopRef.current) {
@@ -185,7 +201,9 @@ const HlsSyncPlayer = forwardRef<VideoSyncPlayerHandle, HlsSyncPlayerProps>(
           liveAlignmentDoneRef.current = false;
           await adapter.pause();
           await adapter.seekTo(0);
-          setStatusText("Premiere is waiting to begin.");
+          bufferingRef.current = false;
+          setBuffering(false);
+          setStatusIfChanged("Waiting for stream to begin.");
           setDriftDebug((current) => ({
             ...current,
             targetTime,
@@ -201,7 +219,7 @@ const HlsSyncPlayer = forwardRef<VideoSyncPlayerHandle, HlsSyncPlayerProps>(
         if (currentPhase === "SILENCE") {
           softCorrectionStartedAtRef.current = null;
           await adapter.pause();
-          setStatusText("Silence interval in progress.");
+          setStatusIfChanged("Silence interval in progress.");
           publishDebugState({
             targetTime,
           });
@@ -211,7 +229,7 @@ const HlsSyncPlayer = forwardRef<VideoSyncPlayerHandle, HlsSyncPlayerProps>(
         if (currentPhase === "DISCUSSION" || currentPhase === "CLOSED") {
           softCorrectionStartedAtRef.current = null;
           await adapter.pause();
-          setStatusText(
+          setStatusIfChanged(
             currentPhase === "DISCUSSION"
               ? "Discussion room is open."
               : "Screening has ended.",
@@ -224,7 +242,7 @@ const HlsSyncPlayer = forwardRef<VideoSyncPlayerHandle, HlsSyncPlayerProps>(
 
         if (requiresPriming && !playPrimedRef.current) {
           await adapter.pause();
-          setStatusText("Tap to enable playback.");
+          setStatusIfChanged("Tap to enable playback.");
           publishDebugState({
             targetTime,
           });
@@ -236,7 +254,11 @@ const HlsSyncPlayer = forwardRef<VideoSyncPlayerHandle, HlsSyncPlayerProps>(
           adapter.isBuffering() ||
           (!adapter.isNativeHls() && !adapter.isManifestParsed())
         ) {
-          setStatusText("Buffering stream...");
+          if (currentPhase === "LIVE") {
+            setStatusIfChanged("Buffering stream...");
+          } else if (currentPhase === "WAITING") {
+            setStatusIfChanged("Waiting for stream to begin.");
+          }
           publishDebugState({
             targetTime,
             readyState: adapter.getReadyState(),
@@ -294,7 +316,7 @@ const HlsSyncPlayer = forwardRef<VideoSyncPlayerHandle, HlsSyncPlayerProps>(
         }
 
         await adapter.play();
-        setStatusText("Live playback synchronized.");
+        setStatusIfChanged("Live playback synchronized.");
         setDriftDebug({
           playerTime: currentTime,
           targetTime,
@@ -308,11 +330,24 @@ const HlsSyncPlayer = forwardRef<VideoSyncPlayerHandle, HlsSyncPlayerProps>(
           buffering: adapter.isBuffering(),
         });
       },
-      [publishDebugState, requiresPriming],
+      [publishDebugState, requiresPriming, setStatusIfChanged],
     );
 
     const recoverFromPlaybackFailure = useCallback(
       async (error: HlsFatalError) => {
+        if (phaseRef.current !== "LIVE") {
+          if (phaseRef.current === "WAITING") {
+            setStatusIfChanged("Waiting for stream to begin.");
+          } else if (phaseRef.current === "SILENCE") {
+            setStatusIfChanged("Silence interval in progress.");
+          } else if (phaseRef.current === "DISCUSSION") {
+            setStatusIfChanged("Discussion room is open.");
+          } else {
+            setStatusIfChanged("Screening has ended.");
+          }
+          return;
+        }
+
         if (recoveryInFlightRef.current) {
           return;
         }
@@ -326,14 +361,14 @@ const HlsSyncPlayer = forwardRef<VideoSyncPlayerHandle, HlsSyncPlayerProps>(
             return;
           }
 
-          setStatusText(
+          setStatusIfChanged(
             error.isForbidden
               ? "Stream token expired. Refreshing stream..."
               : "Stream interrupted. Attempting recovery...",
           );
           await adapter.pause();
 
-          const freshBootstrap = (await onBootstrapRefresh?.()) ?? null;
+          const freshBootstrap = (await onBootstrapRefreshRef.current?.()) ?? null;
           const nextManifestUrl =
             freshBootstrap?.finalManifestUrl ?? finalManifestUrlRef.current;
           if (!nextManifestUrl) {
@@ -347,18 +382,18 @@ const HlsSyncPlayer = forwardRef<VideoSyncPlayerHandle, HlsSyncPlayerProps>(
           await syncToCanonicalTime({
             forceHardSeek: true,
           });
-          setStatusText("Stream recovered.");
+          setStatusIfChanged("Stream recovered.");
           publishDebugState({
             lastResyncAt: lastResyncAtRef.current,
           });
         } catch (recoveryError) {
           console.error(recoveryError);
-          setStatusText("Playback recovery failed.");
+          setStatusIfChanged("Playback recovery failed.");
         } finally {
           recoveryInFlightRef.current = false;
         }
       },
-      [onBootstrapRefresh, publishDebugState, stopDriftLoop, syncToCanonicalTime],
+      [publishDebugState, setStatusIfChanged, stopDriftLoop, syncToCanonicalTime],
     );
 
     useImperativeHandle(
@@ -411,9 +446,12 @@ const HlsSyncPlayer = forwardRef<VideoSyncPlayerHandle, HlsSyncPlayerProps>(
         setReadyState(video.readyState);
       };
       const onWaiting = () => {
+        if (phaseRef.current !== "LIVE") {
+          return;
+        }
         bufferingRef.current = true;
         setBuffering(true);
-        setStatusText("Buffering stream...");
+        setStatusIfChanged("Buffering stream...");
         stopDriftLoop();
       };
       const onRecovered = () => {
@@ -428,6 +466,10 @@ const HlsSyncPlayer = forwardRef<VideoSyncPlayerHandle, HlsSyncPlayerProps>(
               forceHardSeek: true,
             });
           })();
+          return;
+        }
+        if (phaseRef.current === "WAITING") {
+          setStatusIfChanged("Waiting for stream to begin.");
         }
       };
       const onError = () => {
@@ -463,7 +505,12 @@ const HlsSyncPlayer = forwardRef<VideoSyncPlayerHandle, HlsSyncPlayerProps>(
         video.removeEventListener("playing", onRecovered);
         video.removeEventListener("error", onError);
       };
-    }, [recoverFromPlaybackFailure, stopDriftLoop, syncToCanonicalTime]);
+    }, [
+      recoverFromPlaybackFailure,
+      setStatusIfChanged,
+      stopDriftLoop,
+      syncToCanonicalTime,
+    ]);
 
     useEffect(() => {
       if (!hasAccess || !screening || screening.videoProvider !== "hls") {
@@ -491,7 +538,7 @@ const HlsSyncPlayer = forwardRef<VideoSyncPlayerHandle, HlsSyncPlayerProps>(
       const initialize = async () => {
         try {
           setIsPlayerReady(false);
-          setStatusText("Loading stream...");
+          setStatusIfChanged("Loading stream...");
           await adapter.initialize(videoElement, finalManifestUrl);
           await adapter.waitUntilReady(READY_TIMEOUT_MS);
           if (cancelled) {
@@ -499,14 +546,14 @@ const HlsSyncPlayer = forwardRef<VideoSyncPlayerHandle, HlsSyncPlayerProps>(
           }
           setIsPlayerReady(true);
           setReadyState(adapter.getReadyState());
-          setStatusText("HLS stream ready.");
+          setStatusIfChanged("HLS stream ready.");
           await syncToCanonicalTime({
             forceHardSeek: true,
           });
         } catch (error) {
           console.error(error);
           if (!cancelled) {
-            setStatusText("Unable to initialize HLS stream.");
+            setStatusIfChanged("Unable to initialize HLS stream.");
           }
         }
       };
@@ -525,6 +572,7 @@ const HlsSyncPlayer = forwardRef<VideoSyncPlayerHandle, HlsSyncPlayerProps>(
       playbackConfigError,
       recoverFromPlaybackFailure,
       screening,
+      setStatusIfChanged,
       stopDriftLoop,
       syncToCanonicalTime,
     ]);
@@ -602,12 +650,12 @@ const HlsSyncPlayer = forwardRef<VideoSyncPlayerHandle, HlsSyncPlayerProps>(
           void adapter.pause();
         }, 150);
         setPrimed(true);
-        setStatusText("Playback primed. Ready for LIVE start.");
+        setStatusIfChanged("Playback primed. Ready for LIVE start.");
       } catch (error) {
         console.error(error);
-        setStatusText("Priming failed. Tap again.");
+        setStatusIfChanged("Priming failed. Tap again.");
       }
-    }, [setPrimed]);
+    }, [setPrimed, setStatusIfChanged]);
 
     const handlePlayPause = useCallback(async () => {
       const adapter = adapterRef.current;
@@ -743,7 +791,7 @@ const HlsSyncPlayer = forwardRef<VideoSyncPlayerHandle, HlsSyncPlayerProps>(
               <button
                 type="button"
                 onClick={() => void handlePlayPause()}
-                disabled={!isPlayerReady || phase === "SILENCE"}
+                disabled={!isPlayerReady || phase === "SILENCE" || phase === "WAITING"}
               >
                 {isPlaying ? "Pause" : "Play"}
               </button>
