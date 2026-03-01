@@ -42,6 +42,13 @@ export interface VideoSyncDebugState {
   operationOwner?: "none" | "startup" | "token_refresh" | "recovery";
   reinitLocked?: boolean;
   pendingReinitReason?: "token_refresh" | "recovery" | null;
+  requiresPriming?: boolean;
+  isPrimed?: boolean;
+  startupAttemptId?: number;
+  gestureTapCount?: number;
+  lastGestureAtMs?: number | null;
+  lastPlayAttempt?: string | null;
+  startupCalledFromGesture?: boolean;
 }
 
 export interface VideoSyncPlayerHandle {

@@ -74,6 +74,10 @@ type SyncOptions = {
 type GestureOverlayPhase = "idle" | "accepting" | "exiting";
 type OperationOwner = "none" | "startup" | "token_refresh" | "recovery";
 type PendingReinitReason = "token_refresh" | "recovery" | null;
+type LastPlayAttempt =
+  | "attempted"
+  | "video_play_ok"
+  | `video_play_failed:${string}`;
 type HlsE2EProbeState = {
   playbackEngine: HlsPlaybackEngine;
   manifestParsed: boolean;
@@ -83,6 +87,18 @@ type HlsE2EProbeState = {
   buffering: boolean;
   recoveryState: HlsRecoveryState;
   playbackStartState: PlaybackStartState;
+  autoplayBlocked: boolean;
+  playIntentActive: boolean;
+  operationOwner: OperationOwner;
+  reinitLocked: boolean;
+  pendingReinitReason: PendingReinitReason;
+  requiresPriming: boolean;
+  isPrimed: boolean;
+  startupAttemptId: number;
+  gestureTapCount: number;
+  lastGestureAtMs: number | null;
+  lastPlayAttempt: LastPlayAttempt | null;
+  startupCalledFromGesture: boolean;
 };
 
 declare global {
@@ -166,6 +182,24 @@ function statusTextForPlaybackStartState(state: PlaybackStartState): string {
   return "Loading stream...";
 }
 
+function getPlayAttemptRank(value: LastPlayAttempt | null): number {
+  if (value === null) {
+    return 0;
+  }
+  if (value === "attempted") {
+    return 1;
+  }
+  return 2;
+}
+
+function toFailedPlayAttempt(error: unknown): LastPlayAttempt {
+  const errorName =
+    error instanceof Error && error.name.trim().length > 0
+      ? error.name.trim()
+      : "UnknownError";
+  return `video_play_failed:${errorName}`;
+}
+
 const HlsSyncPlayer = forwardRef<VideoSyncPlayerHandle, HlsSyncPlayerProps>(
   function HlsSyncPlayer(
     {
@@ -218,6 +252,10 @@ const HlsSyncPlayer = forwardRef<VideoSyncPlayerHandle, HlsSyncPlayerProps>(
     const gestureOverlayAcceptTimerRef = useRef<number | null>(null);
     const gestureOverlayExitTimerRef = useRef<number | null>(null);
     const gestureTapInFlightRef = useRef(false);
+    const gestureTapCountRef = useRef(0);
+    const lastGestureAtMsRef = useRef<number | null>(null);
+    const lastPlayAttemptRef = useRef<LastPlayAttempt | null>(null);
+    const startupCalledFromGestureRef = useRef(false);
     const livePauseResumeTimerRef = useRef<number | null>(null);
     const livePauseCooldownUntilRef = useRef(0);
     const authRecoveryAttemptsRef = useRef<number[]>([]);
@@ -350,6 +388,13 @@ const HlsSyncPlayer = forwardRef<VideoSyncPlayerHandle, HlsSyncPlayerProps>(
           pendingReinitReason: pendingReinitRequestedRef.current
             ? pendingReinitReasonRef.current
             : null,
+          requiresPriming,
+          isPrimed: playPrimedRef.current,
+          startupAttemptId: startupAttemptIdRef.current,
+          gestureTapCount: gestureTapCountRef.current,
+          lastGestureAtMs: lastGestureAtMsRef.current,
+          lastPlayAttempt: lastPlayAttemptRef.current,
+          startupCalledFromGesture: startupCalledFromGestureRef.current,
           ...patch,
         };
 
@@ -363,6 +408,21 @@ const HlsSyncPlayer = forwardRef<VideoSyncPlayerHandle, HlsSyncPlayerProps>(
             buffering: Boolean(nextDebugState.buffering),
             recoveryState: nextDebugState.recoveryState ?? "IDLE",
             playbackStartState: nextDebugState.playbackStartState ?? "IDLE",
+            autoplayBlocked: Boolean(nextDebugState.autoplayBlocked),
+            playIntentActive: Boolean(nextDebugState.playIntentActive),
+            operationOwner: nextDebugState.operationOwner ?? "none",
+            reinitLocked: Boolean(nextDebugState.reinitLocked),
+            pendingReinitReason: nextDebugState.pendingReinitReason ?? null,
+            requiresPriming: Boolean(nextDebugState.requiresPriming),
+            isPrimed: Boolean(nextDebugState.isPrimed),
+            startupAttemptId: nextDebugState.startupAttemptId ?? 0,
+            gestureTapCount: nextDebugState.gestureTapCount ?? 0,
+            lastGestureAtMs: nextDebugState.lastGestureAtMs ?? null,
+            lastPlayAttempt:
+              (nextDebugState.lastPlayAttempt as LastPlayAttempt | null) ?? null,
+            startupCalledFromGesture: Boolean(
+              nextDebugState.startupCalledFromGesture,
+            ),
           };
         }
 
@@ -373,7 +433,7 @@ const HlsSyncPlayer = forwardRef<VideoSyncPlayerHandle, HlsSyncPlayerProps>(
         lastDebugSignatureRef.current = nextSignature;
         onDebugStateChangeCurrent(nextDebugState);
       },
-      [],
+      [requiresPriming],
     );
 
     const setStatusIfChanged = useCallback((nextStatus: string) => {
@@ -617,8 +677,72 @@ const HlsSyncPlayer = forwardRef<VideoSyncPlayerHandle, HlsSyncPlayerProps>(
         } else {
           window.sessionStorage.removeItem(key);
         }
+        publishDebugState({
+          isPrimed: value,
+        });
       },
-      [room],
+      [publishDebugState, room],
+    );
+
+    const markGestureTap = useCallback(() => {
+      gestureTapCountRef.current += 1;
+      lastGestureAtMsRef.current = Date.now();
+      publishDebugState({
+        gestureTapCount: gestureTapCountRef.current,
+        lastGestureAtMs: lastGestureAtMsRef.current,
+      });
+    }, [publishDebugState]);
+
+    const updateLastPlayAttempt = useCallback(
+      (next: LastPlayAttempt) => {
+        const current = lastPlayAttemptRef.current;
+        const currentRank = getPlayAttemptRank(current);
+        const nextRank = getPlayAttemptRank(next);
+        if (nextRank < currentRank) {
+          return;
+        }
+        if (currentRank === 2) {
+          return;
+        }
+        if (current === next) {
+          return;
+        }
+        lastPlayAttemptRef.current = next;
+        publishDebugState({
+          lastPlayAttempt: next,
+        });
+      },
+      [publishDebugState],
+    );
+
+    const markStartupCalledFromGesture = useCallback(() => {
+      if (startupCalledFromGestureRef.current) {
+        return;
+      }
+      startupCalledFromGestureRef.current = true;
+      publishDebugState({
+        startupCalledFromGesture: true,
+      });
+    }, [publishDebugState]);
+
+    const resetGestureProbeState = useCallback(() => {
+      gestureTapCountRef.current = 0;
+      lastGestureAtMsRef.current = null;
+      lastPlayAttemptRef.current = null;
+      startupCalledFromGestureRef.current = false;
+      publishDebugState({
+        gestureTapCount: 0,
+        lastGestureAtMs: null,
+        lastPlayAttempt: null,
+        startupCalledFromGesture: false,
+      });
+    }, [publishDebugState]);
+
+    const markGesturePlayFailure = useCallback(
+      (error: unknown) => {
+        updateLastPlayAttempt(toFailedPlayAttempt(error));
+      },
+      [updateLastPlayAttempt],
     );
 
     const computeTargetTimeSec = useCallback(() => {
@@ -1670,6 +1794,7 @@ const HlsSyncPlayer = forwardRef<VideoSyncPlayerHandle, HlsSyncPlayerProps>(
       playPrimedRef.current = primed;
       setIsPrimed(primed);
       setAutoplayBlockedState(false);
+      resetGestureProbeState();
       updatePlaybackStartState("IDLE", {
         keepStatus: true,
       });
@@ -1677,6 +1802,7 @@ const HlsSyncPlayer = forwardRef<VideoSyncPlayerHandle, HlsSyncPlayerProps>(
     }, [
       invalidateStartupAttempt,
       room,
+      resetGestureProbeState,
       setAutoplayBlockedState,
       updatePlaybackStartState,
     ]);
@@ -2095,13 +2221,22 @@ const HlsSyncPlayer = forwardRef<VideoSyncPlayerHandle, HlsSyncPlayerProps>(
         return;
       }
       gestureTapInFlightRef.current = true;
+      markGestureTap();
+      updateLastPlayAttempt("attempted");
 
       video.muted = true;
       setIsMuted(true);
 
       void (async () => {
         try {
-          await video.play();
+          try {
+            await video.play();
+            updateLastPlayAttempt("video_play_ok");
+          } catch (error) {
+            markGesturePlayFailure(error);
+            throw error;
+          }
+
           setPrimed(true);
 
           if (phaseRef.current === "WAITING") {
@@ -2121,6 +2256,7 @@ const HlsSyncPlayer = forwardRef<VideoSyncPlayerHandle, HlsSyncPlayerProps>(
           }
 
           beginGestureOverlayDismissal();
+          markStartupCalledFromGesture();
           await startPlaybackFromCanonical({
             forceHardSeek: true,
             fromGesture: true,
@@ -2147,12 +2283,16 @@ const HlsSyncPlayer = forwardRef<VideoSyncPlayerHandle, HlsSyncPlayerProps>(
     }, [
       beginGestureOverlayDismissal,
       clearShortProgressCheck,
+      markGesturePlayFailure,
+      markGestureTap,
       requiresPriming,
       setAutoplayBlockedState,
       setPrimed,
       setStatusIfChanged,
       startPlaybackFromCanonical,
       stopDriftLoop,
+      markStartupCalledFromGesture,
+      updateLastPlayAttempt,
       updatePlaybackStartState,
     ]);
 
