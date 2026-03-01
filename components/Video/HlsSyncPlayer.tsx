@@ -1654,73 +1654,6 @@ const HlsSyncPlayer = forwardRef<VideoSyncPlayerHandle, HlsSyncPlayerProps>(
       updatePlaybackStartState,
     ]);
 
-    const handlePlayPause = useCallback(async () => {
-      const adapter = adapterRef.current;
-      if (!adapter) {
-        return;
-      }
-
-      if (requiresPriming && !isPrimed) {
-        handleOverlayPlaybackTap();
-        return;
-      }
-
-      try {
-        if (phaseRef.current === "LIVE" && isPlaying) {
-          playIntentRef.current = true;
-          livePauseCooldownUntilRef.current = Date.now() + LIVE_PAUSE_RESUME_COOLDOWN_MS;
-          setStatusIfChanged("Live playback resumes automatically.");
-          await adapter.pause();
-          if (livePauseResumeTimerRef.current) {
-            window.clearTimeout(livePauseResumeTimerRef.current);
-            livePauseResumeTimerRef.current = null;
-          }
-          livePauseResumeTimerRef.current = window.setTimeout(() => {
-            if (phaseRef.current !== "LIVE") {
-              return;
-            }
-            void startPlaybackFromCanonical({
-              forceHardSeek: false,
-            });
-          }, LIVE_PAUSE_RESUME_COOLDOWN_MS);
-          return;
-        }
-
-        if (isPlaying) {
-          playIntentRef.current = false;
-          clearShortProgressCheck();
-          updatePlaybackStartState("IDLE", {
-            keepStatus: true,
-          });
-          await adapter.pause();
-        } else {
-          playIntentRef.current = true;
-          updatePlaybackStartState("STARTING");
-          await adapter.play();
-          updatePlaybackStartState("PLAYING");
-        }
-      } catch (error) {
-        console.error(error);
-        if (isAutoplayBlockedError(error)) {
-          playIntentRef.current = false;
-          setAutoplayBlockedState(true);
-          updatePlaybackStartState("BLOCKED_AUTOPLAY");
-          stopDriftLoop();
-        }
-      }
-    }, [
-      clearShortProgressCheck,
-      handleOverlayPlaybackTap,
-      isPlaying,
-      isPrimed,
-      requiresPriming,
-      setAutoplayBlockedState,
-      setStatusIfChanged,
-      startPlaybackFromCanonical,
-      stopDriftLoop,
-      updatePlaybackStartState,
-    ]);
-
     const handleToggleMute = useCallback(() => {
       const video = videoRef.current;
       if (!video) {
@@ -1901,13 +1834,6 @@ const HlsSyncPlayer = forwardRef<VideoSyncPlayerHandle, HlsSyncPlayerProps>(
               </div>
             ) : null}
             <div className="video-controls">
-              <button
-                type="button"
-                onClick={() => void handlePlayPause()}
-                disabled={!isPlayerReady || phase === "SILENCE" || phase === "WAITING"}
-              >
-                {isPlaying ? "Pause" : "Play"}
-              </button>
               <button type="button" onClick={handleToggleMute}>
                 {isMuted ? "Unmute" : "Mute"}
               </button>
