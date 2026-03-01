@@ -1,12 +1,25 @@
 "use client";
 
-import Hls from "hls.js";
+import Hls, {
+  type LoaderCallbacks,
+  type LoaderConfiguration,
+  type LoaderContext,
+} from "hls.js";
 
 export type HlsFatalError = {
   statusCode?: number;
   details?: string;
   isForbidden: boolean;
 };
+
+export type HlsReadinessStage =
+  | "INIT"
+  | "ATTACHING"
+  | "MANIFEST_LOADING"
+  | "MANIFEST_PARSED"
+  | "METADATA"
+  | "READY"
+  | "ERROR";
 
 type FatalListener = (error: HlsFatalError) => void;
 
@@ -44,8 +57,22 @@ export class HlsPlaybackAdapter {
 
   private fatalListener: FatalListener | null = null;
 
+  private manifestUrl: string | null = null;
+
+  private readinessStage: HlsReadinessStage = "INIT";
+
+  private lastFatalError: HlsFatalError | null = null;
+
   setFatalListener(listener: FatalListener | null): void {
     this.fatalListener = listener;
+  }
+
+  getReadinessStage(): HlsReadinessStage {
+    return this.readinessStage;
+  }
+
+  getLastFatalError(): HlsFatalError | null {
+    return this.lastFatalError;
   }
 
   isNativeHls(): boolean {
@@ -79,6 +106,7 @@ export class HlsPlaybackAdapter {
     if (this.ready) {
       return;
     }
+    this.readinessStage = "READY";
     this.ready = true;
     this.readyResolver?.();
     this.readyResolver = null;
@@ -90,6 +118,8 @@ export class HlsPlaybackAdapter {
   }
 
   private emitFatal(error: HlsFatalError): void {
+    this.readinessStage = "ERROR";
+    this.lastFatalError = error;
     this.fatalListener?.(error);
   }
 
@@ -106,7 +136,10 @@ export class HlsPlaybackAdapter {
 
   async initialize(video: HTMLVideoElement, manifestUrl: string): Promise<void> {
     await this.destroy();
+    this.readinessStage = "ATTACHING";
+    this.lastFatalError = null;
     this.video = video;
+    this.manifestUrl = manifestUrl;
     this.buffering = false;
     this.nativeHls = false;
     this.manifestParsed = false;
@@ -114,10 +147,16 @@ export class HlsPlaybackAdapter {
     this.createReadyPromise();
 
     this.addVideoListener(video, "loadedmetadata", () => {
+      if (this.readinessStage !== "READY") {
+        this.readinessStage = "METADATA";
+      }
       this.markReady();
     });
     this.addVideoListener(video, "canplay", () => {
       this.buffering = false;
+      if (this.readinessStage !== "READY") {
+        this.readinessStage = "METADATA";
+      }
       this.markReady();
     });
     this.addVideoListener(video, "playing", () => {
@@ -138,6 +177,7 @@ export class HlsPlaybackAdapter {
     if (video.canPlayType("application/vnd.apple.mpegurl")) {
       this.nativeHls = true;
       this.manifestParsed = true;
+      this.readinessStage = "MANIFEST_LOADING";
       video.src = manifestUrl;
       video.load();
       return;
@@ -147,13 +187,59 @@ export class HlsPlaybackAdapter {
       throw new Error("HLS playback is not supported on this browser.");
     }
 
+    const manifestOrigin = new URL(manifestUrl).origin;
+    const manifestTokenParams = new URL(manifestUrl).searchParams;
+    const authParamNames = ["token", "bcdn_token", "expires", "token_path"];
+    const authEntries = authParamNames
+      .map((name) => [name, manifestTokenParams.get(name)] as const)
+      .filter((entry): entry is readonly [string, string] => Boolean(entry[1]));
+
+    function appendAuthParams(rawUrl: string): string {
+      if (!authEntries.length) {
+        return rawUrl;
+      }
+
+      let resolvedUrl: URL;
+      try {
+        resolvedUrl = new URL(rawUrl, manifestUrl);
+      } catch {
+        return rawUrl;
+      }
+
+      if (resolvedUrl.origin !== manifestOrigin) {
+        return resolvedUrl.toString();
+      }
+
+      for (const [name, value] of authEntries) {
+        if (!resolvedUrl.searchParams.has(name)) {
+          resolvedUrl.searchParams.set(name, value);
+        }
+      }
+
+      return resolvedUrl.toString();
+    }
+
+    const BaseLoader = Hls.DefaultConfig.loader;
+    class BunnyTokenLoader extends BaseLoader {
+      load(
+        context: LoaderContext,
+        config: LoaderConfiguration,
+        callbacks: LoaderCallbacks<LoaderContext>,
+      ): void {
+        context.url = appendAuthParams(context.url);
+        super.load(context, config, callbacks);
+      }
+    }
+
     const hls = new Hls({
       enableWorker: true,
       lowLatencyMode: false,
+      loader: BunnyTokenLoader,
     });
 
     hls.on(Hls.Events.MANIFEST_PARSED, () => {
       this.manifestParsed = true;
+      this.readinessStage = "MANIFEST_PARSED";
       if ((this.video?.readyState ?? 0) >= 1) {
         this.markReady();
       }
@@ -171,6 +257,7 @@ export class HlsPlaybackAdapter {
       }
     });
 
+    this.readinessStage = "MANIFEST_LOADING";
     hls.loadSource(manifestUrl);
     hls.attachMedia(video);
     this.hls = hls;
@@ -181,7 +268,16 @@ export class HlsPlaybackAdapter {
       this.readyPromise,
       new Promise<void>((_, reject) => {
         const timer = window.setTimeout(() => {
-          reject(new Error("HLS player readiness timed out."));
+          const lastError = this.lastFatalError;
+          const lastErrorDetails =
+            lastError?.statusCode || lastError?.details
+              ? ` Last error: ${lastError?.statusCode ?? "n/a"} ${lastError?.details ?? ""}`.trim()
+              : "";
+          reject(
+            new Error(
+              `HLS player readiness timed out. Stage: ${this.readinessStage}.${lastErrorDetails ? ` ${lastErrorDetails}` : ""}`,
+            ),
+          );
         }, timeoutMs);
 
         void this.readyPromise.finally(() => window.clearTimeout(timer));
@@ -251,6 +347,9 @@ export class HlsPlaybackAdapter {
     }
 
     this.video = null;
+    this.manifestUrl = null;
+    this.readinessStage = "INIT";
+    this.lastFatalError = null;
     this.ready = false;
     this.manifestParsed = false;
     this.buffering = false;

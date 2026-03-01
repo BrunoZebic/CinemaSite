@@ -131,7 +131,7 @@ function getBunnyTokenExpirySeconds(filmDurationSec: number): number {
   if (!Number.isFinite(configured) || configured <= 0) {
     return defaultSeconds;
   }
-  return Math.floor(configured);
+  return Math.max(defaultSeconds, Math.floor(configured));
 }
 
 function isAdvancedBunnyTokenMode(): boolean {
@@ -169,6 +169,7 @@ export async function buildRoomBootstrap(
       hasAccess: false,
       isHost: false,
       finalManifestUrl: null,
+      tokenExpiresAtUnixMs: null,
       requiresPriming: false,
       playbackConfigError: null,
       rehearsalScrubEnabled,
@@ -190,6 +191,7 @@ export async function buildRoomBootstrap(
   const requiresPriming = screening.videoProvider === "hls";
   const clientScreening = sanitizeScreeningForClient(screening);
   let finalManifestUrl: string | null = null;
+  let tokenExpiresAtUnixMs: number | null = null;
   let playbackConfigError: string | null = null;
 
   if (requiresPriming && hasAccess) {
@@ -210,14 +212,18 @@ export async function buildRoomBootstrap(
         playbackConfigError = "HLS token signing is not configured.";
       } else {
         try {
+          const nowUnixMs = Date.now();
+          const expiresInSeconds = getBunnyTokenExpirySeconds(
+            screening.filmDurationSec,
+          );
           finalManifestUrl = createSignedBunnyManifestUrl({
             cdnBaseUrl,
             manifestPath: pathResolution.manifestPath,
             tokenKey,
-            expiresInSeconds: getBunnyTokenExpirySeconds(
-              screening.filmDurationSec,
-            ),
+            expiresInSeconds,
+            nowUnixMs,
           });
+          tokenExpiresAtUnixMs = nowUnixMs + expiresInSeconds * 1000;
         } catch {
           playbackConfigError = "Unable to sign HLS manifest URL.";
         }
@@ -234,6 +240,7 @@ export async function buildRoomBootstrap(
     hasAccess,
     isHost,
     finalManifestUrl,
+    tokenExpiresAtUnixMs,
     requiresPriming,
     playbackConfigError,
     rehearsalScrubEnabled,

@@ -195,6 +195,7 @@ export default function PremiereShell({ room, initialBootstrap }: PremiereShellP
               serverOffsetMs={serverOffsetMs}
               channelStatus={channelStatus}
               finalManifestUrl={bootstrap.finalManifestUrl}
+              tokenExpiresAtUnixMs={bootstrap.tokenExpiresAtUnixMs}
               requiresPriming={bootstrap.requiresPriming}
               playbackConfigError={bootstrap.playbackConfigError}
               rehearsalScrubEnabled={bootstrap.rehearsalScrubEnabled}
@@ -279,6 +280,12 @@ export default function PremiereShell({ room, initialBootstrap }: PremiereShellP
           <p>serverOffsetMs: {Math.round(syncDebugState.serverOffsetMs)}</p>
           <p>readyState: {syncDebugState.readyState ?? "n/a"}</p>
           <p>buffering: {String(syncDebugState.buffering ?? false)}</p>
+          <p>readinessStage: {syncDebugState.readinessStage ?? "n/a"}</p>
+          <p>recoveryState: {syncDebugState.recoveryState ?? "n/a"}</p>
+          <p>
+            recoveryAttemptsWindow: {syncDebugState.recoveryAttemptsWindow ?? "n/a"}
+          </p>
+          <p>lastErrorClass: {syncDebugState.lastErrorClass ?? "n/a"}</p>
           <p>
             lastResyncAt:{" "}
             {syncDebugState.lastResyncAt

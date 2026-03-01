@@ -34,6 +34,7 @@ export interface RoomBootstrap {
   hasAccess: boolean;
   isHost: boolean;
   finalManifestUrl: string | null;
+  tokenExpiresAtUnixMs: number | null;
   requiresPriming: boolean;
   playbackConfigError: string | null;
   rehearsalScrubEnabled: boolean;

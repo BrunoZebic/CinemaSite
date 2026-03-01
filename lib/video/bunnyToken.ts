@@ -20,7 +20,7 @@ export type ManifestPathResolutionResult =
   | ManifestPathResolutionSuccess
   | ManifestPathResolutionFailure;
 
-const MANIFEST_EXTENSION = ".m3u8";
+const ALLOWED_MANIFEST_PATH = /^\/[A-Za-z0-9/_\-.]+$/;
 
 function reject(error: string): ManifestPathResolutionFailure {
   return {
@@ -44,23 +44,30 @@ function validateManifestPath(rawPath: string): ManifestPathResolutionResult {
   if (trimmed.includes("\\") || trimmed.includes("..")) {
     return reject("Manifest path contains invalid path traversal characters.");
   }
+  if (trimmed.includes("//")) {
+    return reject("Manifest path cannot contain repeated slashes.");
+  }
   if (trimmed.includes("?") || trimmed.includes("#")) {
     return reject("Manifest path must not contain query or hash values.");
   }
   if (trimmed.includes("://")) {
     return reject("Manifest path must not include protocol or hostname.");
   }
-  if (/%2e/i.test(trimmed)) {
-    return reject("Manifest path contains encoded dot segments.");
+  if (/%2e/i.test(trimmed) || /%2f/i.test(trimmed)) {
+    return reject("Manifest path contains encoded traversal components.");
   }
-  if (!trimmed.toLowerCase().endsWith(MANIFEST_EXTENSION)) {
-    return reject("Manifest path must end with .m3u8.");
+  if (!ALLOWED_MANIFEST_PATH.test(trimmed)) {
+    return reject("Manifest path contains unsupported characters.");
   }
-
-  const normalized = normalizePathSlashes(trimmed);
+  if (!trimmed.startsWith("/screenings/")) {
+    return reject("Manifest path must start with /screenings/.");
+  }
+  if (!trimmed.toLowerCase().endsWith("/master.m3u8")) {
+    return reject("Manifest path must end with /master.m3u8.");
+  }
   return {
     ok: true,
-    manifestPath: normalized,
+    manifestPath: trimmed,
   };
 }
 
@@ -150,7 +157,9 @@ export function createSignedBunnyManifestUrl({
   const signedParameters = `token_path=${tokenPath}`;
   const signatureInput = `${tokenKey}${tokenPath}${expires}${signedParameters}`;
   const token = toBase64UrlSha256(signatureInput);
-  const tokenPathEncoded = encodeURIComponent(tokenPath);
-
-  return `${base}/bcdn_token=${token}&expires=${expires}&token_path=${tokenPathEncoded}${validated.manifestPath}`;
+  const finalUrl = new URL(`${base}${validated.manifestPath}`);
+  finalUrl.searchParams.set("token", token);
+  finalUrl.searchParams.set("expires", String(expires));
+  finalUrl.searchParams.set("token_path", tokenPath);
+  return finalUrl.toString();
 }
