@@ -2,6 +2,7 @@
   --bg-0: #080a10;
   --bg-1: #0f1830;
   --bg-2: #1c2840;
+  --chat-cap-offset: 210px;
   --surface: rgba(11, 16, 29, 0.88);
   --surface-strong: #121b31;
   --border: rgba(255, 255, 255, 0.18);
@@ -419,7 +420,7 @@ a {
   gap: 0.65rem;
   min-height: 0;
   height: 100%;
-  overflow: hidden;
+  overflow: visible;
   padding: 0.85rem 0.95rem;
 }
 
@@ -885,16 +886,30 @@ a {
   .chat-drawer {
     position: static;
     transform: none;
-    height: 100%;
+    height: auto;
+    min-height: 0;
+    overflow: hidden;
+    max-height: min(760px, calc(100vh - var(--chat-cap-offset)));
+    max-height: min(760px, calc(100dvh - var(--chat-cap-offset)));
   }
 
   .chat-panel {
-    height: 100%;
+    display: flex;
+    flex-direction: column;
+    flex: 1 1 auto;
+    min-height: 0;
+    height: auto;
   }
 
   .chat-toggle,
   .chat-close-btn,
   .chat-backdrop {
     display: none;
+  }
+}
+
+@media (min-width: 901px) and (min-height: 840px) {
+  .chat-panel {
+    min-height: 520px;
   }
 }
