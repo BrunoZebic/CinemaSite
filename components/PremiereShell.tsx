@@ -127,6 +127,34 @@ export default function PremiereShell({ room, initialBootstrap }: PremiereShellP
     }
   }, [refreshBootstrap]);
 
+  const handleDebugStateChange = useCallback((next: VideoSyncDebugState) => {
+    setSyncDebugState((current) => {
+      if (
+        current &&
+        current.phase === next.phase &&
+        current.playerTime === next.playerTime &&
+        current.targetTime === next.targetTime &&
+        current.drift === next.drift &&
+        current.isDriftLoopActive === next.isDriftLoopActive &&
+        current.serverOffsetMs === next.serverOffsetMs &&
+        current.lastResyncAt === next.lastResyncAt &&
+        current.channelStatus === next.channelStatus &&
+        current.readyState === next.readyState &&
+        current.buffering === next.buffering &&
+        current.readinessStage === next.readinessStage &&
+        current.recoveryState === next.recoveryState &&
+        current.recoveryAttemptsWindow === next.recoveryAttemptsWindow &&
+        current.lastErrorClass === next.lastErrorClass &&
+        current.playbackStartState === next.playbackStartState &&
+        current.autoplayBlocked === next.autoplayBlocked &&
+        current.playIntentActive === next.playIntentActive
+      ) {
+        return current;
+      }
+      return next;
+    });
+  }, []);
+
   useEffect(() => {
     const timer = window.setInterval(() => setClockMs(Date.now()), 1000);
     return () => window.clearInterval(timer);
@@ -200,7 +228,7 @@ export default function PremiereShell({ room, initialBootstrap }: PremiereShellP
               playbackConfigError={bootstrap.playbackConfigError}
               rehearsalScrubEnabled={bootstrap.rehearsalScrubEnabled}
               onBootstrapRefresh={refreshBootstrap}
-              onDebugStateChange={setSyncDebugState}
+              onDebugStateChange={handleDebugStateChange}
             />
           ) : (
             <VideoSyncPlayer
@@ -211,7 +239,7 @@ export default function PremiereShell({ room, initialBootstrap }: PremiereShellP
               hasAccess={hasAccess}
               serverOffsetMs={serverOffsetMs}
               channelStatus={channelStatus}
-              onDebugStateChange={setSyncDebugState}
+              onDebugStateChange={handleDebugStateChange}
             />
           )}
         </section>
@@ -282,6 +310,9 @@ export default function PremiereShell({ room, initialBootstrap }: PremiereShellP
           <p>buffering: {String(syncDebugState.buffering ?? false)}</p>
           <p>readinessStage: {syncDebugState.readinessStage ?? "n/a"}</p>
           <p>recoveryState: {syncDebugState.recoveryState ?? "n/a"}</p>
+          <p>playbackStartState: {syncDebugState.playbackStartState ?? "n/a"}</p>
+          <p>autoplayBlocked: {String(syncDebugState.autoplayBlocked ?? false)}</p>
+          <p>playIntentActive: {String(syncDebugState.playIntentActive ?? false)}</p>
           <p>
             recoveryAttemptsWindow: {syncDebugState.recoveryAttemptsWindow ?? "n/a"}
           </p>

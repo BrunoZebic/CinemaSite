@@ -7,6 +7,16 @@ export type HlsRecoveryErrorClass =
   | "NETWORK_OR_PARSE"
   | "MEDIA_STALL";
 
+export type PlaybackStartState =
+  | "IDLE"
+  | "PRIMING_REQUIRED"
+  | "STARTING"
+  | "CANONICAL_SEEKED"
+  | "PLAYING"
+  | "BUFFERING"
+  | "BLOCKED_AUTOPLAY"
+  | "DEGRADED";
+
 export interface VideoSyncDebugState {
   phase: PremierePhase;
   playerTime: number;
@@ -22,6 +32,9 @@ export interface VideoSyncDebugState {
   recoveryState?: HlsRecoveryState;
   recoveryAttemptsWindow?: string;
   lastErrorClass?: HlsRecoveryErrorClass | null;
+  playbackStartState?: PlaybackStartState;
+  autoplayBlocked?: boolean;
+  playIntentActive?: boolean;
 }
 
 export interface VideoSyncPlayerHandle {

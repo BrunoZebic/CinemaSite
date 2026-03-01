@@ -47,6 +47,10 @@ export class HlsPlaybackAdapter {
 
   private nativeHls = false;
 
+  private mediaAttached = false;
+
+  private metadataLoaded = false;
+
   private pendingSeekSec: number | null = null;
 
   private readyResolver: (() => void) | null = null;
@@ -91,6 +95,23 @@ export class HlsPlaybackAdapter {
     return this.ready;
   }
 
+  canSeekReliably(): boolean {
+    const video = this.video;
+    if (!video) {
+      return false;
+    }
+
+    if (!this.mediaAttached || !this.metadataLoaded) {
+      return false;
+    }
+
+    if (!this.nativeHls && !this.manifestParsed) {
+      return false;
+    }
+
+    return video.readyState >= 2 || video.seekable.length > 0;
+  }
+
   getReadyState(): number {
     return this.video?.readyState ?? 0;
   }
@@ -114,6 +135,12 @@ export class HlsPlaybackAdapter {
       const queuedSeek = this.pendingSeekSec;
       this.pendingSeekSec = null;
       void this.seekTo(queuedSeek);
+    }
+  }
+
+  private tryMarkReady(): void {
+    if (this.canSeekReliably()) {
+      this.markReady();
     }
   }
 
@@ -142,22 +169,26 @@ export class HlsPlaybackAdapter {
     this.manifestUrl = manifestUrl;
     this.buffering = false;
     this.nativeHls = false;
+    this.mediaAttached = false;
+    this.metadataLoaded = false;
     this.manifestParsed = false;
     this.pendingSeekSec = null;
     this.createReadyPromise();
 
     this.addVideoListener(video, "loadedmetadata", () => {
+      this.metadataLoaded = true;
       if (this.readinessStage !== "READY") {
         this.readinessStage = "METADATA";
       }
-      this.markReady();
+      this.tryMarkReady();
     });
     this.addVideoListener(video, "canplay", () => {
       this.buffering = false;
+      this.metadataLoaded = true;
       if (this.readinessStage !== "READY") {
         this.readinessStage = "METADATA";
       }
-      this.markReady();
+      this.tryMarkReady();
     });
     this.addVideoListener(video, "playing", () => {
       this.buffering = false;
@@ -176,6 +207,7 @@ export class HlsPlaybackAdapter {
 
     if (video.canPlayType("application/vnd.apple.mpegurl")) {
       this.nativeHls = true;
+      this.mediaAttached = true;
       this.manifestParsed = true;
       this.readinessStage = "MANIFEST_LOADING";
       video.src = manifestUrl;
@@ -240,9 +272,12 @@ export class HlsPlaybackAdapter {
     hls.on(Hls.Events.MANIFEST_PARSED, () => {
       this.manifestParsed = true;
       this.readinessStage = "MANIFEST_PARSED";
-      if ((this.video?.readyState ?? 0) >= 1) {
-        this.markReady();
-      }
+      this.tryMarkReady();
+    });
+
+    hls.on(Hls.Events.MEDIA_ATTACHED, () => {
+      this.mediaAttached = true;
+      this.tryMarkReady();
     });
 
     hls.on(Hls.Events.ERROR, (_event, data) => {
@@ -354,6 +389,8 @@ export class HlsPlaybackAdapter {
     this.manifestParsed = false;
     this.buffering = false;
     this.nativeHls = false;
+    this.mediaAttached = false;
+    this.metadataLoaded = false;
     this.pendingSeekSec = null;
     this.readyResolver = null;
     this.readyPromise = Promise.resolve();

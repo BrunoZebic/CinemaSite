@@ -11,6 +11,7 @@ import {
 import type {
   HlsRecoveryErrorClass,
   HlsRecoveryState,
+  PlaybackStartState,
   VideoSyncDebugState,
   VideoSyncPlayerHandle,
 } from "@/components/Video/types";
@@ -34,6 +35,12 @@ const PREEMPTIVE_REFRESH_THRESHOLD_MS = 180_000;
 const TOKEN_REFRESH_COOLDOWN_MS = 60_000;
 const AUTH_RECOVERY_WINDOW_MS = 30_000;
 const AUTH_RECOVERY_MAX_ATTEMPTS = 2;
+const SEEK_SETTLE_TIMEOUT_MS = 1500;
+const SEEK_SETTLE_TIMEOUT_LOW_READY_MS = 3000;
+const SEEK_SETTLE_EPSILON_SEC = 0.35;
+const SHORT_PROGRESS_CHECK_MS = 2500;
+const SHORT_PROGRESS_DELTA_MIN_SEC = 0.1;
+const LIVE_PAUSE_RESUME_COOLDOWN_MS = 2000;
 
 type HlsSyncPlayerProps = {
   room: string;
@@ -64,6 +71,64 @@ function classifyFatalError(error: HlsFatalError): HlsRecoveryErrorClass {
     return "AUTH_SUSPECTED";
   }
   return "NETWORK_OR_PARSE";
+}
+
+function isAutoplayBlockedError(error: unknown): boolean {
+  if (!(error instanceof Error)) {
+    return false;
+  }
+
+  if (error.name === "NotAllowedError") {
+    return true;
+  }
+
+  if (error.name === "AbortError") {
+    return false;
+  }
+
+  const message = error.message.toLowerCase();
+  return (
+    message.includes("user didn't interact") ||
+    message.includes("user did not interact") ||
+    message.includes("interaction") ||
+    message.includes("notallowederror")
+  );
+}
+
+function isIosSafariBrowser(): boolean {
+  if (typeof navigator === "undefined") {
+    return false;
+  }
+
+  const ua = navigator.userAgent;
+  const isIOS = /iPad|iPhone|iPod/.test(ua);
+  const isSafari = /Safari/i.test(ua) && !/CriOS|FxiOS|EdgiOS|OPiOS/i.test(ua);
+  return isIOS && isSafari;
+}
+
+function statusTextForPlaybackStartState(state: PlaybackStartState): string {
+  if (state === "PRIMING_REQUIRED") {
+    return "Tap to enable playback.";
+  }
+  if (state === "STARTING") {
+    return "Starting...";
+  }
+  if (state === "CANONICAL_SEEKED") {
+    return "Syncing...";
+  }
+  if (state === "BUFFERING") {
+    return "Buffering stream...";
+  }
+  if (state === "BLOCKED_AUTOPLAY") {
+    return "Tap to play.";
+  }
+  if (state === "DEGRADED") {
+    return "Playback issue - Retry";
+  }
+  if (state === "PLAYING") {
+    return "Live playback synchronized.";
+  }
+  return "Loading stream...";
 }
 
 const HlsSyncPlayer = forwardRef<VideoSyncPlayerHandle, HlsSyncPlayerProps>(
@@ -105,14 +170,39 @@ const HlsSyncPlayer = forwardRef<VideoSyncPlayerHandle, HlsSyncPlayerProps>(
     const onBootstrapRefreshRef = useRef(onBootstrapRefresh);
     const onDebugStateChangeRef = useRef(onDebugStateChange);
     const channelStatusRef = useRef(channelStatus);
+    const lastDebugSignatureRef = useRef<string>("");
     const recoveryStateRef = useRef<HlsRecoveryState>("IDLE");
+    const playbackStartStateRef = useRef<PlaybackStartState>("IDLE");
+    const autoplayBlockedRef = useRef(false);
     const lastErrorClassRef = useRef<HlsRecoveryErrorClass | null>(null);
+    const playIntentRef = useRef(false);
+    const startupAttemptIdRef = useRef(0);
+    const activeStartupAttemptRef = useRef(0);
+    const startupPlayingSinceRef = useRef<number | null>(null);
+    const shortProgressCheckTimerRef = useRef<number | null>(null);
+    const livePauseResumeTimerRef = useRef<number | null>(null);
+    const livePauseCooldownUntilRef = useRef(0);
     const authRecoveryAttemptsRef = useRef<number[]>([]);
     const networkRecoveryStepRef = useRef<0 | 1 | 2>(0);
     const lastProgressAtRef = useRef<number>(Date.now());
     const lastKnownCurrentTimeRef = useRef<number>(0);
     const lastTokenRefreshAtRef = useRef<number>(0);
     const skipEffectInitUrlRef = useRef<string | null>(null);
+    const syncToCanonicalTimeRef = useRef<(options?: SyncOptions) => Promise<void>>(
+      async () => {},
+    );
+    const startPlaybackFromCanonicalRef = useRef<
+      (options?: { forceHardSeek?: boolean; userGesture?: boolean }) => Promise<void>
+    >(async () => {});
+    const recoverFromPlaybackFailureRef = useRef<
+      (error: HlsFatalError) => Promise<void>
+    >(async () => {});
+    const shouldAllowBufferingStateRef = useRef<() => boolean>(() => false);
+    const updatePlaybackStartStateRef = useRef<
+      (next: PlaybackStartState, options?: { keepStatus?: boolean }) => void
+    >(() => {});
+    const stopDriftLoopRef = useRef<() => void>(() => {});
+    const setStatusIfChangedRef = useRef<(nextStatus: string) => void>(() => {});
 
     const [isPlayerReady, setIsPlayerReady] = useState(false);
     const [isPrimed, setIsPrimed] = useState(false);
@@ -130,6 +220,9 @@ const HlsSyncPlayer = forwardRef<VideoSyncPlayerHandle, HlsSyncPlayerProps>(
       drift: 0,
     });
     const [recoveryState, setRecoveryState] = useState<HlsRecoveryState>("IDLE");
+    const [playbackStartState, setPlaybackStartState] =
+      useState<PlaybackStartState>("IDLE");
+    const [autoplayBlocked, setAutoplayBlocked] = useState(false);
     const [lastErrorClass, setLastErrorClass] =
       useState<HlsRecoveryErrorClass | null>(null);
     const driftDebugRef = useRef(driftDebug);
@@ -147,6 +240,8 @@ const HlsSyncPlayer = forwardRef<VideoSyncPlayerHandle, HlsSyncPlayerProps>(
     driftDebugRef.current = driftDebug;
     readyStateRef.current = readyState;
     recoveryStateRef.current = recoveryState;
+    playbackStartStateRef.current = playbackStartState;
+    autoplayBlockedRef.current = autoplayBlocked;
     lastErrorClassRef.current = lastErrorClass;
 
     const publishDebugState = useCallback(
@@ -158,7 +253,7 @@ const HlsSyncPlayer = forwardRef<VideoSyncPlayerHandle, HlsSyncPlayerProps>(
 
         const currentDriftDebug = driftDebugRef.current;
         const adapter = adapterRef.current;
-        onDebugStateChangeCurrent({
+        const nextDebugState: VideoSyncDebugState = {
           phase: phaseRef.current,
           playerTime: currentDriftDebug.playerTime,
           targetTime: currentDriftDebug.targetTime,
@@ -173,8 +268,18 @@ const HlsSyncPlayer = forwardRef<VideoSyncPlayerHandle, HlsSyncPlayerProps>(
           recoveryState: recoveryStateRef.current,
           recoveryAttemptsWindow: `auth:${authRecoveryAttemptsRef.current.length}/${AUTH_RECOVERY_MAX_ATTEMPTS} net:${networkRecoveryStepRef.current}/2`,
           lastErrorClass: lastErrorClassRef.current,
+          playbackStartState: playbackStartStateRef.current,
+          autoplayBlocked: autoplayBlockedRef.current,
+          playIntentActive: playIntentRef.current,
           ...patch,
-        });
+        };
+
+        const nextSignature = JSON.stringify(nextDebugState);
+        if (nextSignature === lastDebugSignatureRef.current) {
+          return;
+        }
+        lastDebugSignatureRef.current = nextSignature;
+        onDebugStateChangeCurrent(nextDebugState);
       },
       [],
     );
@@ -186,6 +291,51 @@ const HlsSyncPlayer = forwardRef<VideoSyncPlayerHandle, HlsSyncPlayerProps>(
     const updateRecoveryState = useCallback((next: HlsRecoveryState) => {
       recoveryStateRef.current = next;
       setRecoveryState(next);
+    }, []);
+
+    const updatePlaybackStartState = useCallback(
+      (next: PlaybackStartState, options?: { keepStatus?: boolean }) => {
+        playbackStartStateRef.current = next;
+        setPlaybackStartState(next);
+        if (!options?.keepStatus) {
+          setStatusIfChanged(statusTextForPlaybackStartState(next));
+        }
+      },
+      [setStatusIfChanged],
+    );
+
+    const setAutoplayBlockedState = useCallback((next: boolean) => {
+      autoplayBlockedRef.current = next;
+      setAutoplayBlocked(next);
+    }, []);
+
+    const clearShortProgressCheck = useCallback(() => {
+      if (shortProgressCheckTimerRef.current) {
+        window.clearTimeout(shortProgressCheckTimerRef.current);
+        shortProgressCheckTimerRef.current = null;
+      }
+    }, []);
+
+    const beginStartupAttempt = useCallback(() => {
+      const nextAttempt = startupAttemptIdRef.current + 1;
+      startupAttemptIdRef.current = nextAttempt;
+      activeStartupAttemptRef.current = nextAttempt;
+      return nextAttempt;
+    }, []);
+
+    const invalidateStartupAttempt = useCallback(() => {
+      const nextAttempt = startupAttemptIdRef.current + 1;
+      startupAttemptIdRef.current = nextAttempt;
+      activeStartupAttemptRef.current = 0;
+      clearShortProgressCheck();
+    }, [clearShortProgressCheck]);
+
+    const isStartupAttemptActive = useCallback((attemptId: number) => {
+      return (
+        attemptId !== 0 &&
+        attemptId === startupAttemptIdRef.current &&
+        attemptId === activeStartupAttemptRef.current
+      );
     }, []);
 
     const updateLastErrorClass = useCallback(
@@ -221,11 +371,140 @@ const HlsSyncPlayer = forwardRef<VideoSyncPlayerHandle, HlsSyncPlayerProps>(
       [room],
     );
 
+    const computeTargetTimeSec = useCallback(() => {
+      const activeScreening = screeningRef.current;
+      if (!activeScreening) {
+        return 0;
+      }
+
+      const rawTargetSec =
+        (Date.now() + serverOffsetRef.current - activeScreening.premiereStartUnixMs) /
+        1000;
+      return clampPlaybackTargetSec(rawTargetSec, activeScreening.filmDurationSec);
+    }, []);
+
+    const getSeekSettleTimeoutMs = useCallback(() => {
+      const video = videoRef.current;
+      if (!video) {
+        return SEEK_SETTLE_TIMEOUT_LOW_READY_MS;
+      }
+
+      const lowReadiness = video.readyState < 2 || video.seekable.length === 0;
+      if (lowReadiness || isIosSafariBrowser()) {
+        return SEEK_SETTLE_TIMEOUT_LOW_READY_MS;
+      }
+
+      return SEEK_SETTLE_TIMEOUT_MS;
+    }, []);
+
+    const waitForSeekSettled = useCallback(
+      async (attemptId: number, targetTime: number): Promise<void> => {
+        const video = videoRef.current;
+        if (!video) {
+          return;
+        }
+
+        const timeoutMs = getSeekSettleTimeoutMs();
+        const startedAt = Date.now();
+
+        await new Promise<void>((resolve) => {
+          const settle = () => {
+            video.removeEventListener("seeked", onSeeked);
+            resolve();
+          };
+
+          const onSeeked = () => {
+            if (!isStartupAttemptActive(attemptId)) {
+              settle();
+              return;
+            }
+            if (Math.abs(video.currentTime - targetTime) <= SEEK_SETTLE_EPSILON_SEC) {
+              settle();
+            }
+          };
+
+          video.addEventListener("seeked", onSeeked);
+
+          const poll = () => {
+            if (!isStartupAttemptActive(attemptId)) {
+              settle();
+              return;
+            }
+
+            if (Math.abs(video.currentTime - targetTime) <= SEEK_SETTLE_EPSILON_SEC) {
+              settle();
+              return;
+            }
+
+            if (Date.now() - startedAt >= timeoutMs) {
+              settle();
+              return;
+            }
+
+            window.setTimeout(poll, 60);
+          };
+
+          poll();
+        });
+      },
+      [getSeekSettleTimeoutMs, isStartupAttemptActive],
+    );
+
+    const shouldAllowBufferingState = useCallback(() => {
+      if (phaseRef.current !== "LIVE" || !playIntentRef.current) {
+        return false;
+      }
+
+      const state = playbackStartStateRef.current;
+      return state === "STARTING" || state === "PLAYING";
+    }, []);
+
+    const scheduleShortProgressCheck = useCallback(
+      (attemptId: number, fromTime: number) => {
+        clearShortProgressCheck();
+        shortProgressCheckTimerRef.current = window.setTimeout(() => {
+          if (!isStartupAttemptActive(attemptId)) {
+            return;
+          }
+          if (phaseRef.current !== "LIVE" || !playIntentRef.current) {
+            return;
+          }
+
+          const video = videoRef.current;
+          if (!video) {
+            return;
+          }
+
+          if (playbackStartStateRef.current !== "PLAYING") {
+            return;
+          }
+
+          if (video.currentTime - fromTime >= SHORT_PROGRESS_DELTA_MIN_SEC) {
+            return;
+          }
+
+          bufferingRef.current = true;
+          setBuffering(true);
+          updatePlaybackStartState("BUFFERING");
+          stopDriftLoop();
+          publishDebugState({
+            buffering: true,
+          });
+        }, SHORT_PROGRESS_CHECK_MS);
+      },
+      [
+        clearShortProgressCheck,
+        isStartupAttemptActive,
+        publishDebugState,
+        stopDriftLoop,
+        updatePlaybackStartState,
+      ],
+    );
+
     const syncToCanonicalTime = useCallback(
       async (options?: SyncOptions) => {
         const adapter = adapterRef.current;
-        const activeScreening = screeningRef.current;
-        if (!adapter || !activeScreening) {
+        if (!adapter || !screeningRef.current) {
           return;
         }
 
@@ -236,23 +515,22 @@ const HlsSyncPlayer = forwardRef<VideoSyncPlayerHandle, HlsSyncPlayerProps>(
           return;
         }
 
-        const now = Date.now();
-        const rawTargetSec =
-          (now + serverOffsetRef.current - activeScreening.premiereStartUnixMs) /
-          1000;
-        const targetTime = clampPlaybackTargetSec(
-          rawTargetSec,
-          activeScreening.filmDurationSec,
-        );
+        const targetTime = computeTargetTimeSec();
         const currentPhase = phaseRef.current;
 
         if (currentPhase === "WAITING") {
+          playIntentRef.current = false;
           softCorrectionStartedAtRef.current = null;
           liveAlignmentDoneRef.current = false;
           await adapter.pause();
           await adapter.seekTo(0);
           bufferingRef.current = false;
           setBuffering(false);
+          setAutoplayBlockedState(false);
+          clearShortProgressCheck();
+          updatePlaybackStartState("IDLE", {
+            keepStatus: true,
+          });
           setStatusIfChanged("Waiting for stream to begin.");
           setDriftDebug((current) => ({
             ...current,
@@ -267,8 +545,15 @@ const HlsSyncPlayer = forwardRef<VideoSyncPlayerHandle, HlsSyncPlayerProps>(
         }
 
         if (currentPhase === "SILENCE") {
+          playIntentRef.current = false;
           softCorrectionStartedAtRef.current = null;
           await adapter.pause();
+          bufferingRef.current = false;
+          setBuffering(false);
+          clearShortProgressCheck();
+          updatePlaybackStartState("IDLE", {
+            keepStatus: true,
+          });
           setStatusIfChanged("Silence interval in progress.");
           publishDebugState({
             targetTime,
@@ -277,8 +562,15 @@ const HlsSyncPlayer = forwardRef<VideoSyncPlayerHandle, HlsSyncPlayerProps>(
         }
 
         if (currentPhase === "DISCUSSION" || currentPhase === "CLOSED") {
+          playIntentRef.current = false;
           softCorrectionStartedAtRef.current = null;
           await adapter.pause();
+          bufferingRef.current = false;
+          setBuffering(false);
+          clearShortProgressCheck();
+          updatePlaybackStartState("IDLE", {
+            keepStatus: true,
+          });
           setStatusIfChanged(
             currentPhase === "DISCUSSION"
               ? "Discussion room is open."
@@ -291,8 +583,24 @@ const HlsSyncPlayer = forwardRef<VideoSyncPlayerHandle, HlsSyncPlayerProps>(
         }
 
         if (requiresPriming && !playPrimedRef.current) {
+          playIntentRef.current = false;
           await adapter.pause();
-          setStatusIfChanged("Tap to enable playback.");
+          setAutoplayBlockedState(false);
+          bufferingRef.current = false;
+          setBuffering(false);
+          clearShortProgressCheck();
+          updatePlaybackStartState("PRIMING_REQUIRED");
+          publishDebugState({
+            targetTime,
+          });
+          return;
+        }
+
+        if (
+          playbackStartStateRef.current === "PRIMING_REQUIRED" ||
+          playbackStartStateRef.current === "BLOCKED_AUTOPLAY" ||
+          playbackStartStateRef.current === "DEGRADED"
+        ) {
           publishDebugState({
             targetTime,
           });
@@ -304,10 +612,10 @@ const HlsSyncPlayer = forwardRef<VideoSyncPlayerHandle, HlsSyncPlayerProps>(
           adapter.isBuffering() ||
           (!adapter.isNativeHls() && !adapter.isManifestParsed())
         ) {
-          if (currentPhase === "LIVE") {
-            setStatusIfChanged("Buffering stream...");
-          } else if (currentPhase === "WAITING") {
-            setStatusIfChanged("Waiting for stream to begin.");
+          if (shouldAllowBufferingState()) {
+            bufferingRef.current = true;
+            setBuffering(true);
+            updatePlaybackStartState("BUFFERING");
           }
           publishDebugState({
             targetTime,
@@ -365,8 +673,50 @@ const HlsSyncPlayer = forwardRef<VideoSyncPlayerHandle, HlsSyncPlayerProps>(
           await adapter.setPlaybackRate(1);
         }
 
-        await adapter.play();
-        setStatusIfChanged("Live playback synchronized.");
+        if (Date.now() < livePauseCooldownUntilRef.current) {
+          publishDebugState({
+            playerTime: currentTime,
+            targetTime,
+            drift,
+          });
+          return;
+        }
+
+        if (playIntentRef.current) {
+          try {
+            await adapter.play();
+          } catch (error) {
+            if (isAutoplayBlockedError(error)) {
+              setAutoplayBlockedState(true);
+              bufferingRef.current = false;
+              setBuffering(false);
+              clearShortProgressCheck();
+              updatePlaybackStartState("BLOCKED_AUTOPLAY");
+              stopDriftLoop();
+              publishDebugState({
+                targetTime,
+                buffering: false,
+                playbackStartState: "BLOCKED_AUTOPLAY",
+                autoplayBlocked: true,
+              });
+              return;
+            }
+            throw error;
+          }
+        }
+
+        setAutoplayBlockedState(false);
+        bufferingRef.current = false;
+        setBuffering(false);
+        if (
+          playbackStartStateRef.current === "STARTING" ||
+          playbackStartStateRef.current === "CANONICAL_SEEKED" ||
+          playbackStartStateRef.current === "BUFFERING"
+        ) {
+          updatePlaybackStartState("PLAYING");
+        } else {
+          setStatusIfChanged("Live playback synchronized.");
+        }
         if (networkRecoveryStepRef.current > 0) {
           networkRecoveryStepRef.current = 0;
         }
@@ -387,10 +737,133 @@ const HlsSyncPlayer = forwardRef<VideoSyncPlayerHandle, HlsSyncPlayerProps>(
         });
       },
       [
+        clearShortProgressCheck,
+        computeTargetTimeSec,
         publishDebugState,
         requiresPriming,
+        setAutoplayBlockedState,
         setStatusIfChanged,
+        shouldAllowBufferingState,
+        stopDriftLoop,
+        updatePlaybackStartState,
         updateRecoveryState,
+      ],
+    );
+
+    const startPlaybackFromCanonical = useCallback(
+      async (options?: { forceHardSeek?: boolean; userGesture?: boolean }) => {
+        const adapter = adapterRef.current;
+        const activeScreening = screeningRef.current;
+        const video = videoRef.current;
+        if (!adapter || !activeScreening || !video) {
+          return;
+        }
+
+        const attemptId = beginStartupAttempt();
+        playIntentRef.current = true;
+        setAutoplayBlockedState(false);
+        bufferingRef.current = false;
+        setBuffering(false);
+        clearShortProgressCheck();
+
+        if (requiresPriming && !playPrimedRef.current) {
+          playIntentRef.current = false;
+          updatePlaybackStartState("PRIMING_REQUIRED");
+          stopDriftLoop();
+          await adapter.pause();
+          publishDebugState({
+            playbackStartState: "PRIMING_REQUIRED",
+            playIntentActive: false,
+          });
+          return;
+        }
+
+        updatePlaybackStartState("STARTING");
+
+        try {
+          await adapter.waitUntilReady(READY_TIMEOUT_MS);
+          if (!isStartupAttemptActive(attemptId)) {
+            return;
+          }
+
+          const targetTime = computeTargetTimeSec();
+          await adapter.seekTo(targetTime);
+          await waitForSeekSettled(attemptId, targetTime);
+          if (!isStartupAttemptActive(attemptId)) {
+            return;
+          }
+
+          liveAlignmentDoneRef.current = true;
+          updatePlaybackStartState("CANONICAL_SEEKED");
+
+          if (!options?.userGesture && !video.muted) {
+            video.muted = true;
+            setIsMuted(true);
+          }
+
+          if (options?.userGesture) {
+            await video.play();
+          } else {
+            await adapter.play();
+          }
+
+          if (!isStartupAttemptActive(attemptId)) {
+            return;
+          }
+
+          setAutoplayBlockedState(false);
+          updatePlaybackStartState("PLAYING");
+          lastResyncAtRef.current = Date.now();
+          startupPlayingSinceRef.current = Date.now();
+          const playerNow = await adapter.getCurrentTime();
+          scheduleShortProgressCheck(attemptId, playerNow);
+          publishDebugState({
+            playerTime: playerNow,
+            targetTime,
+            drift: playerNow - targetTime,
+            lastResyncAt: lastResyncAtRef.current,
+            playbackStartState: "PLAYING",
+            autoplayBlocked: false,
+            playIntentActive: true,
+          });
+
+          await syncToCanonicalTime({
+            forceHardSeek: options?.forceHardSeek,
+          });
+        } catch (error) {
+          if (!isStartupAttemptActive(attemptId)) {
+            return;
+          }
+
+          if (isAutoplayBlockedError(error)) {
+            playIntentRef.current = false;
+            setAutoplayBlockedState(true);
+            updatePlaybackStartState("BLOCKED_AUTOPLAY");
+            stopDriftLoop();
+            publishDebugState({
+              playbackStartState: "BLOCKED_AUTOPLAY",
+              autoplayBlocked: true,
+              playIntentActive: false,
+            });
+            return;
+          }
+
+          throw error;
+        }
+      },
+      [
+        beginStartupAttempt,
+        clearShortProgressCheck,
+        computeTargetTimeSec,
+        isStartupAttemptActive,
+        publishDebugState,
+        requiresPriming,
+        scheduleShortProgressCheck,
+        setAutoplayBlockedState,
+        stopDriftLoop,
+        syncToCanonicalTime,
+        updatePlaybackStartState,
+        waitForSeekSettled,
       ],
     );
 
@@ -412,8 +885,10 @@ const HlsSyncPlayer = forwardRef<VideoSyncPlayerHandle, HlsSyncPlayerProps>(
           setStatusIfChanged(options.announce);
         }
 
+        invalidateStartupAttempt();
         stopDriftLoop();
         setIsPlayerReady(false);
+        clearShortProgressCheck();
         finalManifestUrlRef.current = nextManifestUrl;
         skipEffectInitUrlRef.current = nextManifestUrl;
         await adapter.initialize(videoElement, nextManifestUrl);
@@ -422,24 +897,52 @@ const HlsSyncPlayer = forwardRef<VideoSyncPlayerHandle, HlsSyncPlayerProps>(
         setReadyState(adapter.getReadyState());
         liveAlignmentDoneRef.current = false;
         lastResyncAtRef.current = Date.now();
-        await syncToCanonicalTime({
-          forceHardSeek: true,
-        });
+        if (phaseRef.current === "LIVE") {
+          await startPlaybackFromCanonical({
+            forceHardSeek: true,
+          });
+        } else {
+          await syncToCanonicalTime({
+            forceHardSeek: true,
+          });
+        }
         publishDebugState({
           lastResyncAt: lastResyncAtRef.current,
         });
       },
-      [publishDebugState, setStatusIfChanged, stopDriftLoop, syncToCanonicalTime],
+      [
+        clearShortProgressCheck,
+        invalidateStartupAttempt,
+        publishDebugState,
+        setStatusIfChanged,
+        startPlaybackFromCanonical,
+        stopDriftLoop,
+        syncToCanonicalTime,
+      ],
     );
 
     const enterDegradedState = useCallback(
       (errorClass: HlsRecoveryErrorClass, message: string) => {
+        playIntentRef.current = false;
+        setAutoplayBlockedState(false);
         updateLastErrorClass(errorClass);
         updateRecoveryState("DEGRADED");
+        updatePlaybackStartState("DEGRADED", {
+          keepStatus: true,
+        });
         setStatusIfChanged(message);
+        clearShortProgressCheck();
         stopDriftLoop();
       },
-      [setStatusIfChanged, stopDriftLoop, updateLastErrorClass, updateRecoveryState],
+      [
+        clearShortProgressCheck,
+        setAutoplayBlockedState,
+        setStatusIfChanged,
+        stopDriftLoop,
+        updateLastErrorClass,
+        updatePlaybackStartState,
+        updateRecoveryState,
+      ],
     );
 
     const recoverNetworkOrParse = useCallback(async (): Promise<boolean> => {
@@ -599,6 +1102,11 @@ const HlsSyncPlayer = forwardRef<VideoSyncPlayerHandle, HlsSyncPlayerProps>(
       async (error: HlsFatalError) => {
         const currentPhase = phaseRef.current;
         if (currentPhase !== "LIVE") {
+          playIntentRef.current = false;
+          setAutoplayBlockedState(false);
+          updatePlaybackStartState("IDLE", {
+            keepStatus: true,
+          });
           if (currentPhase === "WAITING") {
             setStatusIfChanged("Waiting for stream to begin.");
           } else if (currentPhase === "SILENCE") {
@@ -613,8 +1121,21 @@ const HlsSyncPlayer = forwardRef<VideoSyncPlayerHandle, HlsSyncPlayerProps>(
 
         await attemptRecovery(classifyFatalError(error));
       },
-      [attemptRecovery, setStatusIfChanged],
+      [
+        attemptRecovery,
+        setAutoplayBlockedState,
+        setStatusIfChanged,
+        updatePlaybackStartState,
+      ],
     );
+
+    syncToCanonicalTimeRef.current = syncToCanonicalTime;
+    startPlaybackFromCanonicalRef.current = startPlaybackFromCanonical;
+    recoverFromPlaybackFailureRef.current = recoverFromPlaybackFailure;
+    shouldAllowBufferingStateRef.current = shouldAllowBufferingState;
+    updatePlaybackStartStateRef.current = updatePlaybackStartState;
+    stopDriftLoopRef.current = stopDriftLoop;
+    setStatusIfChangedRef.current = setStatusIfChanged;
 
     useImperativeHandle(
       ref,
@@ -640,7 +1161,17 @@ const HlsSyncPlayer = forwardRef<VideoSyncPlayerHandle, HlsSyncPlayerProps>(
       const primed = window.sessionStorage.getItem(getPrimingKey(room)) === "1";
       playPrimedRef.current = primed;
       setIsPrimed(primed);
-    }, [room]);
+      setAutoplayBlockedState(false);
+      updatePlaybackStartState("IDLE", {
+        keepStatus: true,
+      });
+      invalidateStartupAttempt();
+    }, [
+      invalidateStartupAttempt,
+      room,
+      setAutoplayBlockedState,
+      updatePlaybackStartState,
+    ]);
 
     useEffect(() => {
       const video = videoRef.current;
@@ -648,14 +1179,22 @@ const HlsSyncPlayer = forwardRef<VideoSyncPlayerHandle, HlsSyncPlayerProps>(
         return;
       }
 
+      video.setAttribute("playsinline", "true");
+      video.setAttribute("webkit-playsinline", "true");
+
       const onTimeUpdate = () => {
         const nextTime = video.currentTime || 0;
         if (nextTime > lastKnownCurrentTimeRef.current + 0.05) {
           lastProgressAtRef.current = Date.now();
           lastKnownCurrentTimeRef.current = nextTime;
         }
-        setPlayerTime(nextTime);
-        setPlayerDuration(video.duration || 0);
+        setPlayerTime((current) =>
+          Math.abs(current - nextTime) >= 0.05 ? nextTime : current,
+        );
+        const nextDuration = video.duration || 0;
+        setPlayerDuration((current) =>
+          Math.abs(current - nextDuration) >= 0.1 ? nextDuration : current,
+        );
       };
       const onPlay = () => {
         setIsPlaying(true);
@@ -663,6 +1202,28 @@ const HlsSyncPlayer = forwardRef<VideoSyncPlayerHandle, HlsSyncPlayerProps>(
       };
       const onPause = () => {
         setIsPlaying(false);
+        if (phaseRef.current !== "LIVE" || !playIntentRef.current) {
+          return;
+        }
+
+        if (Date.now() < livePauseCooldownUntilRef.current) {
+          return;
+        }
+
+        livePauseCooldownUntilRef.current = Date.now() + LIVE_PAUSE_RESUME_COOLDOWN_MS;
+        setStatusIfChangedRef.current("Live playback resumes automatically.");
+        if (livePauseResumeTimerRef.current) {
+          window.clearTimeout(livePauseResumeTimerRef.current);
+          livePauseResumeTimerRef.current = null;
+        }
+        livePauseResumeTimerRef.current = window.setTimeout(() => {
+          if (phaseRef.current !== "LIVE" || !playIntentRef.current || !video.paused) {
+            return;
+          }
+          void startPlaybackFromCanonicalRef.current({
+            forceHardSeek: false,
+          });
+        }, LIVE_PAUSE_RESUME_COOLDOWN_MS);
       };
       const onVolumeChange = () => {
         setIsMuted(video.muted);
@@ -672,13 +1233,13 @@ const HlsSyncPlayer = forwardRef<VideoSyncPlayerHandle, HlsSyncPlayerProps>(
         setReadyState(video.readyState);
       };
       const onWaiting = () => {
-        if (phaseRef.current !== "LIVE") {
+        if (!shouldAllowBufferingStateRef.current()) {
           return;
         }
         bufferingRef.current = true;
         setBuffering(true);
-        setStatusIfChanged("Buffering stream...");
-        stopDriftLoop();
+        updatePlaybackStartStateRef.current("BUFFERING");
+        stopDriftLoopRef.current();
       };
       const onRecovered = () => {
         if (!bufferingRef.current) {
@@ -687,19 +1248,22 @@ const HlsSyncPlayer = forwardRef<VideoSyncPlayerHandle, HlsSyncPlayerProps>(
         bufferingRef.current = false;
         setBuffering(false);
         if (phaseRef.current === "LIVE") {
+          if (playIntentRef.current) {
+            updatePlaybackStartStateRef.current("PLAYING");
+          }
           void (async () => {
-            await syncToCanonicalTime({
+            await syncToCanonicalTimeRef.current({
               forceHardSeek: true,
             });
           })();
           return;
         }
         if (phaseRef.current === "WAITING") {
-          setStatusIfChanged("Waiting for stream to begin.");
+          setStatusIfChangedRef.current("Waiting for stream to begin.");
         }
       };
       const onError = () => {
-        void recoverFromPlaybackFailure({
+        void recoverFromPlaybackFailureRef.current({
           isForbidden: false,
         });
       };
@@ -718,6 +1282,10 @@ const HlsSyncPlayer = forwardRef<VideoSyncPlayerHandle, HlsSyncPlayerProps>(
       video.addEventListener("error", onError);
 
       return () => {
+        if (livePauseResumeTimerRef.current) {
+          window.clearTimeout(livePauseResumeTimerRef.current);
+          livePauseResumeTimerRef.current = null;
+        }
         video.removeEventListener("timeupdate", onTimeUpdate);
         video.removeEventListener("play", onPlay);
         video.removeEventListener("pause", onPause);
@@ -732,10 +1300,6 @@ const HlsSyncPlayer = forwardRef<VideoSyncPlayerHandle, HlsSyncPlayerProps>(
         video.removeEventListener("error", onError);
       };
     }, [
-      recoverFromPlaybackFailure,
-      setStatusIfChanged,
-      stopDriftLoop,
-      syncToCanonicalTime,
     ]);
 
     useEffect(() => {
@@ -772,6 +1336,11 @@ const HlsSyncPlayer = forwardRef<VideoSyncPlayerHandle, HlsSyncPlayerProps>(
       const initialize = async () => {
         try {
           updateRecoveryState("IDLE");
+          setAutoplayBlockedState(false);
+          updatePlaybackStartState("IDLE");
+          clearShortProgressCheck();
+          invalidateStartupAttempt();
+          playIntentRef.current = false;
           setIsPlayerReady(false);
           setStatusIfChanged("Loading stream...");
           await adapter.initialize(videoElement, finalManifestUrl);
@@ -785,6 +1354,10 @@ const HlsSyncPlayer = forwardRef<VideoSyncPlayerHandle, HlsSyncPlayerProps>(
           networkRecoveryStepRef.current = 0;
           if (phaseRef.current === "LIVE") {
             authRecoveryAttemptsRef.current = [];
+            await startPlaybackFromCanonical({
+              forceHardSeek: true,
+            });
+            return;
           }
           await syncToCanonicalTime({
             forceHardSeek: true,
@@ -799,6 +1372,9 @@ const HlsSyncPlayer = forwardRef<VideoSyncPlayerHandle, HlsSyncPlayerProps>(
                 ? "AUTH_SUSPECTED"
                 : "NETWORK_OR_PARSE";
             updateLastErrorClass(errorClass);
+            updatePlaybackStartState("IDLE", {
+              keepStatus: true,
+            });
             if (phaseRef.current === "LIVE") {
               void attemptRecovery(errorClass);
             } else {
@@ -812,20 +1388,27 @@ const HlsSyncPlayer = forwardRef<VideoSyncPlayerHandle, HlsSyncPlayerProps>(
 
       return () => {
         cancelled = true;
+        invalidateStartupAttempt();
+        clearShortProgressCheck();
         stopDriftLoop();
         setIsPlayerReady(false);
         void adapter.destroy();
       };
     }, [
+      clearShortProgressCheck,
       finalManifestUrl,
       hasAccess,
+      invalidateStartupAttempt,
       playbackConfigError,
       recoverFromPlaybackFailure,
       screening,
+      setAutoplayBlockedState,
       setStatusIfChanged,
+      startPlaybackFromCanonical,
       stopDriftLoop,
       syncToCanonicalTime,
       updateLastErrorClass,
+      updatePlaybackStartState,
       updateRecoveryState,
       attemptRecovery,
     ]);
@@ -839,10 +1422,16 @@ const HlsSyncPlayer = forwardRef<VideoSyncPlayerHandle, HlsSyncPlayerProps>(
       }
 
       const timer = window.setTimeout(() => {
+        if (phase === "LIVE") {
+          void startPlaybackFromCanonical({
+            forceHardSeek: false,
+          });
+          return;
+        }
         void syncToCanonicalTime();
       }, 0);
       return () => window.clearTimeout(timer);
-    }, [isPlayerReady, phase, syncToCanonicalTime]);
+    }, [isPlayerReady, phase, startPlaybackFromCanonical, syncToCanonicalTime]);
 
     useEffect(() => {
       const adapter = adapterRef.current;
@@ -851,7 +1440,8 @@ const HlsSyncPlayer = forwardRef<VideoSyncPlayerHandle, HlsSyncPlayerProps>(
         isPlayerReady &&
         hasAccess &&
         phase === "LIVE" &&
-        (!requiresPriming || isPrimed) &&
+        playIntentRef.current &&
+        playbackStartStateRef.current === "PLAYING" &&
         !buffering &&
         (adapter?.getReadyState() ?? 0) >= 2 &&
         (adapter?.isNativeHls() || adapter?.isManifestParsed());
@@ -881,16 +1471,21 @@ const HlsSyncPlayer = forwardRef<VideoSyncPlayerHandle, HlsSyncPlayerProps>(
       buffering,
       hasAccess,
       isPlayerReady,
-      isPrimed,
+      playbackStartState,
       phase,
       publishDebugState,
-      requiresPriming,
       stopDriftLoop,
       syncToCanonicalTime,
     ]);
 
     useEffect(() => {
-      if (!isPlayerReady || !hasAccess || phase !== "LIVE" || recoveryState === "DEGRADED") {
+      if (
+        !isPlayerReady ||
+        !hasAccess ||
+        phase !== "LIVE" ||
+        recoveryState === "DEGRADED" ||
+        !playIntentRef.current
+      ) {
         return;
       }
 
@@ -919,6 +1514,7 @@ const HlsSyncPlayer = forwardRef<VideoSyncPlayerHandle, HlsSyncPlayerProps>(
       isPlayerReady,
       isPlaying,
       phase,
+      playbackStartState,
       recoveryState,
     ]);
 
@@ -928,7 +1524,8 @@ const HlsSyncPlayer = forwardRef<VideoSyncPlayerHandle, HlsSyncPlayerProps>(
         !hasAccess ||
         phase !== "LIVE" ||
         !tokenExpiresAtRef.current ||
-        recoveryState === "DEGRADED"
+        recoveryState === "DEGRADED" ||
+        !playIntentRef.current
       ) {
         return;
       }
@@ -980,32 +1577,82 @@ const HlsSyncPlayer = forwardRef<VideoSyncPlayerHandle, HlsSyncPlayerProps>(
       hasAccess,
       isPlayerReady,
       phase,
+      playbackStartState,
       reinitializeWithUrl,
       recoveryState,
       setStatusIfChanged,
       updateRecoveryState,
     ]);
 
-    const primePlayback = useCallback(async () => {
+    const handleOverlayPlaybackTap = useCallback(() => {
+      const video = videoRef.current;
       const adapter = adapterRef.current;
-      if (!adapter) {
-        setStatusText("Player is not ready for priming.");
+      if (!video || !adapter) {
+        setStatusText("Player is not ready for playback.");
         return;
       }
 
-      try {
-        await adapter.waitUntilReady(READY_TIMEOUT_MS);
-        await adapter.play();
-        window.setTimeout(() => {
-          void adapter.pause();
-        }, 150);
-        setPrimed(true);
-        setStatusIfChanged("Playback primed. Ready for LIVE start.");
-      } catch (error) {
-        console.error(error);
-        setStatusIfChanged("Priming failed. Tap again.");
-      }
-    }, [setPrimed, setStatusIfChanged]);
+      video.muted = true;
+      setIsMuted(true);
+
+      const playPromise = video.play();
+      const attemptId = beginStartupAttempt();
+      activeStartupAttemptRef.current = attemptId;
+      playIntentRef.current = true;
+      setAutoplayBlockedState(false);
+      clearShortProgressCheck();
+
+      void (async () => {
+        try {
+          await playPromise;
+          if (!isStartupAttemptActive(attemptId)) {
+            return;
+          }
+
+          setPrimed(true);
+          updatePlaybackStartState("PLAYING");
+          startupPlayingSinceRef.current = Date.now();
+          const playerNow = await adapter.getCurrentTime();
+          scheduleShortProgressCheck(attemptId, playerNow);
+
+          if (phaseRef.current === "WAITING") {
+            window.setTimeout(() => {
+              void adapter.pause();
+            }, 150);
+            setStatusIfChanged("Playback primed. Ready for LIVE start.");
+            return;
+          }
+
+          await syncToCanonicalTime({
+            forceHardSeek: true,
+          });
+        } catch (error) {
+          console.error(error);
+          if (isAutoplayBlockedError(error)) {
+            setAutoplayBlockedState(true);
+            playIntentRef.current = false;
+            updatePlaybackStartState(
+              requiresPriming ? "PRIMING_REQUIRED" : "BLOCKED_AUTOPLAY",
+            );
+            stopDriftLoop();
+            return;
+          }
+          setStatusIfChanged("Playback start failed. Tap again.");
+        }
+      })();
+    }, [
+      beginStartupAttempt,
+      clearShortProgressCheck,
+      isStartupAttemptActive,
+      requiresPriming,
+      scheduleShortProgressCheck,
+      setAutoplayBlockedState,
+      setPrimed,
+      setStatusIfChanged,
+      stopDriftLoop,
+      syncToCanonicalTime,
+      updatePlaybackStartState,
+    ]);
 
     const handlePlayPause = useCallback(async () => {
       const adapter = adapterRef.current;
@@ -1014,20 +1661,65 @@ const HlsSyncPlayer = forwardRef<VideoSyncPlayerHandle, HlsSyncPlayerProps>(
       }
 
       if (requiresPriming && !isPrimed) {
-        await primePlayback();
+        handleOverlayPlaybackTap();
         return;
       }
 
       try {
+        if (phaseRef.current === "LIVE" && isPlaying) {
+          playIntentRef.current = true;
+          livePauseCooldownUntilRef.current = Date.now() + LIVE_PAUSE_RESUME_COOLDOWN_MS;
+          setStatusIfChanged("Live playback resumes automatically.");
+          await adapter.pause();
+          if (livePauseResumeTimerRef.current) {
+            window.clearTimeout(livePauseResumeTimerRef.current);
+            livePauseResumeTimerRef.current = null;
+          }
+          livePauseResumeTimerRef.current = window.setTimeout(() => {
+            if (phaseRef.current !== "LIVE") {
+              return;
+            }
+            void startPlaybackFromCanonical({
+              forceHardSeek: false,
+            });
+          }, LIVE_PAUSE_RESUME_COOLDOWN_MS);
+          return;
+        }
+
         if (isPlaying) {
+          playIntentRef.current = false;
+          clearShortProgressCheck();
+          updatePlaybackStartState("IDLE", {
+            keepStatus: true,
+          });
           await adapter.pause();
         } else {
+          playIntentRef.current = true;
+          updatePlaybackStartState("STARTING");
           await adapter.play();
+          updatePlaybackStartState("PLAYING");
         }
       } catch (error) {
         console.error(error);
+        if (isAutoplayBlockedError(error)) {
+          playIntentRef.current = false;
+          setAutoplayBlockedState(true);
+          updatePlaybackStartState("BLOCKED_AUTOPLAY");
+          stopDriftLoop();
+        }
       }
-    }, [isPlaying, isPrimed, primePlayback, requiresPriming]);
+    }, [
+      clearShortProgressCheck,
+      handleOverlayPlaybackTap,
+      isPlaying,
+      isPrimed,
+      requiresPriming,
+      setAutoplayBlockedState,
+      setStatusIfChanged,
+      startPlaybackFromCanonical,
+      stopDriftLoop,
+      updatePlaybackStartState,
+    ]);
 
     const handleToggleMute = useCallback(() => {
       const video = videoRef.current;
@@ -1094,6 +1786,10 @@ const HlsSyncPlayer = forwardRef<VideoSyncPlayerHandle, HlsSyncPlayerProps>(
       networkRecoveryStepRef.current = 0;
       updateLastErrorClass(null);
       updateRecoveryState("IDLE");
+      updatePlaybackStartState("STARTING");
+      setAutoplayBlockedState(false);
+      playIntentRef.current = true;
+      clearShortProgressCheck();
       lastProgressAtRef.current = Date.now();
       lastKnownCurrentTimeRef.current = 0;
       const refreshed = (await onBootstrapRefreshRef.current?.()) ?? null;
@@ -1124,10 +1820,13 @@ const HlsSyncPlayer = forwardRef<VideoSyncPlayerHandle, HlsSyncPlayerProps>(
         );
       }
     }, [
+      clearShortProgressCheck,
       enterDegradedState,
       reinitializeWithUrl,
+      setAutoplayBlockedState,
       setStatusIfChanged,
       updateLastErrorClass,
+      updatePlaybackStartState,
       updateRecoveryState,
     ]);
 
@@ -1138,11 +1837,24 @@ const HlsSyncPlayer = forwardRef<VideoSyncPlayerHandle, HlsSyncPlayerProps>(
       phase !== "CLOSED" &&
       !playbackConfigError;
 
-    const shouldShowPrimePrompt =
-      showPlayer && requiresPriming && !isPrimed && (phase === "WAITING" || phase === "LIVE");
+    const shouldShowPrimingOverlay =
+      showPlayer &&
+      phase !== "SILENCE" &&
+      (playbackStartState === "PRIMING_REQUIRED" ||
+        (requiresPriming &&
+          !isPrimed &&
+          (phase === "WAITING" || phase === "LIVE")));
+    const shouldShowBlockedAutoplayOverlay =
+      showPlayer && playbackStartState === "BLOCKED_AUTOPLAY";
     const scrubEnabled =
       rehearsalScrubEnabled && phase !== "LIVE" && phase !== "SILENCE" && showPlayer;
     const showRecoveryOverlay = showPlayer && recoveryState === "DEGRADED";
+    const showPlaybackStartOverlay =
+      shouldShowPrimingOverlay || shouldShowBlockedAutoplayOverlay;
+    const playbackStartOverlayLabel =
+      playbackStartState === "BLOCKED_AUTOPLAY" ? "Tap to play" : "Tap to enable playback";
+    const playbackStartOverlayButton =
+      playbackStartState === "BLOCKED_AUTOPLAY" ? "Play" : "Enable Playback";
 
     return (
       <div className="video-shell">
@@ -1172,11 +1884,11 @@ const HlsSyncPlayer = forwardRef<VideoSyncPlayerHandle, HlsSyncPlayerProps>(
                 <p>Silence</p>
               </div>
             ) : null}
-            {shouldShowPrimePrompt ? (
+            {showPlaybackStartOverlay ? (
               <div className="video-prime-overlay">
-                <p>Tap to enable playback</p>
-                <button type="button" onClick={() => void primePlayback()}>
-                  Enable Playback
+                <p>{playbackStartOverlayLabel}</p>
+                <button type="button" onClick={handleOverlayPlaybackTap}>
+                  {playbackStartOverlayButton}
                 </button>
               </div>
             ) : null}
