@@ -223,7 +223,9 @@ a {
   position: relative;
   overflow: hidden;
   padding: 0;
-  background: #000;
+  border-style: solid;
+  border-color: rgba(124, 216, 200, 0.42);
+  background: radial-gradient(circle at 50% 18%, rgba(25, 45, 72, 0.7), #000 62%);
 }
 
 .video-player-host {
@@ -329,12 +331,12 @@ a {
   width: var(--gesture-size);
   height: var(--gesture-size);
   border-radius: 999px;
-  border: 1px solid rgba(242, 189, 88, 0.55);
+  border: 1px solid rgba(124, 216, 200, 0.64);
   background: radial-gradient(
     circle at 35% 30%,
-    rgba(255, 255, 255, 0.2),
-    rgba(242, 189, 88, 0.15) 45%,
-    rgba(10, 14, 22, 0.95) 100%
+    rgba(180, 236, 228, 0.34),
+    rgba(124, 216, 200, 0.2) 42%,
+    rgba(13, 20, 34, 0.96) 100%
   );
   color: #f7f4ef;
   cursor: pointer;
@@ -342,7 +344,9 @@ a {
   place-items: center;
   padding: 0;
   transition: transform 140ms ease, border-color 140ms ease, box-shadow 140ms ease;
-  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.08), 0 12px 28px rgba(3, 6, 12, 0.45);
+  box-shadow:
+    0 0 0 1px rgba(124, 216, 200, 0.2),
+    0 12px 28px rgba(3, 6, 12, 0.45);
 }
 
 .video-gesture-rings {
@@ -358,8 +362,8 @@ a {
   height: var(--gesture-size);
   margin: auto;
   border-radius: 999px;
-  border: 1px solid rgba(242, 189, 88, 0.32);
-  box-shadow: 0 0 12px rgba(242, 189, 88, 0.16);
+  border: 1px solid rgba(124, 216, 200, 0.36);
+  box-shadow: 0 0 12px rgba(124, 216, 200, 0.2);
   opacity: 0;
   transform: scale(1);
   animation: projector-ring-pulse 2.8s ease-out infinite;
@@ -382,8 +386,10 @@ a {
 
 .video-gesture-cta:hover,
 .video-gesture-cta:focus-visible {
-  border-color: rgba(242, 189, 88, 0.82);
-  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.14), 0 16px 34px rgba(3, 6, 12, 0.5);
+  border-color: rgba(124, 216, 200, 0.92);
+  box-shadow:
+    0 0 0 1px rgba(124, 216, 200, 0.32),
+    0 16px 34px rgba(3, 6, 12, 0.5);
   outline: none;
 }
 
@@ -394,7 +400,7 @@ a {
 
 .video-gesture-cta:hover .video-gesture-ring,
 .video-gesture-cta:focus-visible .video-gesture-ring {
-  border-color: rgba(242, 189, 88, 0.45);
+  border-color: rgba(124, 216, 200, 0.56);
 }
 
 .video-gesture-overlay.is-accepting .video-gesture-ring,
