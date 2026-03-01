@@ -27,7 +27,18 @@ export type HlsReadinessStage =
   | "READY"
   | "ERROR";
 
+export type HlsAdapterLifecycleDebug = {
+  hlsInstanceId: number;
+  attachCount: number;
+  detachCount: number;
+  srcSetCount: number;
+  loadCalledCount: number;
+  adapterGenerationId: number;
+};
+
 type FatalListener = (error: HlsFatalError) => void;
+
+let nextGlobalHlsInstanceId = 1;
 
 function isFatalForbiddenCode(statusCode: unknown): boolean {
   return statusCode === 401 || statusCode === 403;
@@ -74,6 +85,20 @@ export class HlsPlaybackAdapter {
   private readinessStage: HlsReadinessStage = "INIT";
 
   private lastFatalError: HlsFatalError | null = null;
+
+  private adapterGenerationId = 0;
+
+  private hlsInstanceId = 0;
+
+  private attachCount = 0;
+
+  private detachCount = 0;
+
+  private srcSetCount = 0;
+
+  private loadCalledCount = 0;
+
+  private attached = false;
 
   setFatalListener(listener: FatalListener | null): void {
     this.fatalListener = listener;
@@ -132,6 +157,41 @@ export class HlsPlaybackAdapter {
     return this.video?.readyState ?? 0;
   }
 
+  getLifecycleDebug(): HlsAdapterLifecycleDebug {
+    return {
+      hlsInstanceId: this.hlsInstanceId,
+      attachCount: this.attachCount,
+      detachCount: this.detachCount,
+      srcSetCount: this.srcSetCount,
+      loadCalledCount: this.loadCalledCount,
+      adapterGenerationId: this.adapterGenerationId,
+    };
+  }
+
+  private incrementGeneration(): number {
+    this.adapterGenerationId += 1;
+    return this.adapterGenerationId;
+  }
+
+  private isGenerationStale(generation: number): boolean {
+    return generation !== this.adapterGenerationId;
+  }
+
+  private setVideoSrc(video: HTMLVideoElement, src: string): void {
+    video.src = src;
+    this.srcSetCount += 1;
+  }
+
+  private clearVideoSrc(video: HTMLVideoElement): void {
+    video.removeAttribute("src");
+    this.srcSetCount += 1;
+  }
+
+  private callVideoLoad(video: HTMLVideoElement): void {
+    video.load();
+    this.loadCalledCount += 1;
+  }
+
   private createReadyPromise(): void {
     this.ready = false;
     this.readyPromise = new Promise<void>((resolve) => {
@@ -169,16 +229,24 @@ export class HlsPlaybackAdapter {
   private addVideoListener<K extends keyof HTMLMediaElementEventMap>(
     video: HTMLVideoElement,
     eventName: K,
+    generation: number,
     listener: (event: HTMLMediaElementEventMap[K]) => void,
   ): void {
-    video.addEventListener(eventName, listener as EventListener);
+    const guarded = (event: HTMLMediaElementEventMap[K]) => {
+      if (this.isGenerationStale(generation)) {
+        return;
+      }
+      listener(event);
+    };
+    video.addEventListener(eventName, guarded as EventListener);
     this.cleanupFns.push(() =>
-      video.removeEventListener(eventName, listener as EventListener),
+      video.removeEventListener(eventName, guarded as EventListener),
     );
   }
 
   async initialize(video: HTMLVideoElement, manifestUrl: string): Promise<void> {
     await this.destroy();
+    const generation = this.incrementGeneration();
     this.readinessStage = "ATTACHING";
     this.lastFatalError = null;
     this.video = video;
@@ -190,16 +258,17 @@ export class HlsPlaybackAdapter {
     this.metadataLoaded = false;
     this.manifestParsed = false;
     this.pendingSeekSec = null;
+    this.attached = false;
     this.createReadyPromise();
 
-    this.addVideoListener(video, "loadedmetadata", () => {
+    this.addVideoListener(video, "loadedmetadata", generation, () => {
       this.metadataLoaded = true;
       if (this.readinessStage !== "READY") {
         this.readinessStage = "METADATA";
       }
       this.tryMarkReady();
     });
-    this.addVideoListener(video, "canplay", () => {
+    this.addVideoListener(video, "canplay", generation, () => {
       this.buffering = false;
       this.metadataLoaded = true;
       if (this.readinessStage !== "READY") {
@@ -207,16 +276,16 @@ export class HlsPlaybackAdapter {
       }
       this.tryMarkReady();
     });
-    this.addVideoListener(video, "playing", () => {
+    this.addVideoListener(video, "playing", generation, () => {
       this.buffering = false;
     });
-    this.addVideoListener(video, "waiting", () => {
+    this.addVideoListener(video, "waiting", generation, () => {
       this.buffering = true;
     });
-    this.addVideoListener(video, "stalled", () => {
+    this.addVideoListener(video, "stalled", generation, () => {
       this.buffering = true;
     });
-    this.addVideoListener(video, "error", () => {
+    this.addVideoListener(video, "error", generation, () => {
       this.emitFatal({
         isForbidden: false,
       });
@@ -239,9 +308,11 @@ export class HlsPlaybackAdapter {
 
     if (selectedEngine === "native") {
       this.mediaAttached = true;
+      this.attached = true;
+      this.attachCount += 1;
       this.readinessStage = "MANIFEST_LOADING";
-      video.src = manifestUrl;
-      video.load();
+      this.setVideoSrc(video, manifestUrl);
+      this.callVideoLoad(video);
       return;
     }
 
@@ -305,19 +376,30 @@ export class HlsPlaybackAdapter {
       lowLatencyMode: false,
       loader: BunnyTokenLoader,
     });
+    this.hlsInstanceId = nextGlobalHlsInstanceId;
+    nextGlobalHlsInstanceId += 1;
 
     hls.on(Hls.Events.MANIFEST_PARSED, () => {
+      if (this.isGenerationStale(generation)) {
+        return;
+      }
       this.manifestParsed = true;
       this.readinessStage = "MANIFEST_PARSED";
       this.tryMarkReady();
     });
 
     hls.on(Hls.Events.MEDIA_ATTACHED, () => {
+      if (this.isGenerationStale(generation)) {
+        return;
+      }
       this.mediaAttached = true;
       this.tryMarkReady();
     });
 
     hls.on(Hls.Events.ERROR, (_event, data) => {
+      if (this.isGenerationStale(generation)) {
+        return;
+      }
       const statusCode = data.response?.code;
       const forbidden = isFatalForbiddenCode(statusCode);
       if (data.fatal || forbidden) {
@@ -332,6 +414,8 @@ export class HlsPlaybackAdapter {
     this.readinessStage = "MANIFEST_LOADING";
     hls.loadSource(manifestUrl);
     hls.attachMedia(video);
+    this.attached = true;
+    this.attachCount += 1;
     this.hls = hls;
   }
 
@@ -404,18 +488,32 @@ export class HlsPlaybackAdapter {
   }
 
   async destroy(): Promise<void> {
+    this.incrementGeneration();
     for (const cleanup of this.cleanupFns.splice(0)) {
       cleanup();
     }
 
     if (this.hls) {
+      if (this.attached) {
+        try {
+          this.hls.detachMedia();
+        } catch {
+          // no-op
+        }
+        this.detachCount += 1;
+        this.attached = false;
+      }
       this.hls.destroy();
       this.hls = null;
     }
 
     if (this.video) {
-      this.video.removeAttribute("src");
-      this.video.load();
+      if (this.attached) {
+        this.detachCount += 1;
+        this.attached = false;
+      }
+      this.clearVideoSrc(this.video);
+      this.callVideoLoad(this.video);
     }
 
     this.video = null;

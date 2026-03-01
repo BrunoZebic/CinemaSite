@@ -58,11 +58,40 @@ type RuntimeProbeState = {
   pendingReinitReason?: "token_refresh" | "recovery" | null;
   requiresPriming?: boolean;
   isPrimed?: boolean;
+  primedForMountId?: number | null;
   startupAttemptId?: number;
   gestureTapCount?: number;
+  overlayTapHandledCount?: number;
   lastGestureAtMs?: number | null;
   lastPlayAttempt?: string | null;
   startupCalledFromGesture?: boolean;
+  hlsInstanceId?: number;
+  attachCount?: number;
+  detachCount?: number;
+  srcSetCount?: number;
+  loadCalledCount?: number;
+  videoElementMountId?: number;
+  videoRefAssignedAtMs?: number | null;
+  pauseCount?: number;
+  lastPauseReason?: string | null;
+  startupRunStartedCount?: number;
+  startupRunAbortedCount?: number;
+  startupWindowRunId?: number | null;
+  startupWindowStartAtMs?: number | null;
+  startupWindowEndAtMs?: number | null;
+  runEndedReason?:
+    | "progress_reached"
+    | "play_failed"
+    | "handoff_to_recovery"
+    | "aborted_by_supersession"
+    | "aborted_other"
+    | null;
+  lastAbortCause?: string | null;
+  startupSuppressedReason?: "priming_required" | "already_active_run" | null;
+  playAttemptRunId?: number | null;
+  playAttemptStartAtMs?: number | null;
+  doubleStartSuspected?: boolean;
+  suppressedThenTappedSuspected?: boolean;
 };
 
 type VideoDiagnostics = {
@@ -128,6 +157,20 @@ function hasGestureAttributedStartup(probe: RuntimeProbeState | null): boolean {
     return false;
   }
   return Boolean(probe.startupCalledFromGesture) && (probe.gestureTapCount ?? 0) >= 1;
+}
+
+function hasGestureRunWindowOutcome(probe: RuntimeProbeState | null): boolean {
+  if (!probe) {
+    return false;
+  }
+  const hasGestureRun = typeof probe.startupWindowRunId === "number";
+  const primedForCurrentMount =
+    probe.primedForMountId !== null &&
+    probe.primedForMountId !== undefined &&
+    probe.videoElementMountId !== undefined &&
+    probe.primedForMountId === probe.videoElementMountId;
+  const hasTerminalClassification = typeof probe.runEndedReason === "string";
+  return hasGestureRun || primedForCurrentMount || hasTerminalClassification;
 }
 
 async function readVideoDiagnostics(page: Page): Promise<VideoDiagnostics> {
@@ -240,11 +283,12 @@ async function assertGestureProofAfterClick(
   try {
     await expect
       .poll(
-        async () => (await readVideoDiagnostics(page)).probe?.gestureTapCount ?? 0,
+        async () => (await readVideoDiagnostics(page)).probe?.overlayTapHandledCount ?? 0,
         {
           timeout: POST_GESTURE_PROOF_TIMEOUT_MS,
           intervals: [GESTURE_POLL_INTERVAL_MS],
-          message: "Gesture proof failed: expected gestureTapCount >= 1 after click.",
+          message:
+            "Gesture proof failed: expected overlayTapHandledCount >= 1 after click.",
         },
       )
       .toBeGreaterThanOrEqual(1);
@@ -252,8 +296,8 @@ async function assertGestureProofAfterClick(
     await attachDiagnostics(
       page,
       testInfo,
-      "gesture_proof_tap",
-      "Gesture CTA click did not increment gestureTapCount.",
+      "gesture_proof_overlay_tap",
+      "Gesture CTA click did not trigger overlay tap handler.",
       context,
     );
     throw error;
@@ -280,6 +324,29 @@ async function assertGestureProofAfterClick(
       testInfo,
       "gesture_proof_milestone",
       "Gesture CTA click did not advance play milestone.",
+      context,
+    );
+    throw error;
+  }
+
+  try {
+    await expect
+      .poll(
+        async () => hasGestureRunWindowOutcome((await readVideoDiagnostics(page)).probe),
+        {
+          timeout: POST_GESTURE_PROOF_TIMEOUT_MS,
+          intervals: [GESTURE_POLL_INTERVAL_MS],
+          message:
+            "Gesture proof failed: expected startupWindowRunId, primedForMountId match, or terminal runEndedReason.",
+        },
+      )
+      .toBe(true);
+  } catch (error) {
+    await attachDiagnostics(
+      page,
+      testInfo,
+      "gesture_proof_window",
+      "Gesture tap was handled but no startup/priming/terminal run outcome was emitted.",
       context,
     );
     throw error;
@@ -560,6 +627,27 @@ async function assertPlaybackNotStuck(
   }
 }
 
+async function assertNoSuppressionPriorityRegression(
+  page: Page,
+  testInfo: TestInfo,
+  context: GestureContext,
+): Promise<void> {
+  const probe = (await readVideoDiagnostics(page)).probe;
+  if (!probe?.suppressedThenTappedSuspected) {
+    return;
+  }
+  await attachDiagnostics(
+    page,
+    testInfo,
+    "suppression_priority_regression",
+    "Detected suppressedThenTappedSuspected=true; gesture tap appears suppressed by already_active_run.",
+    context,
+  );
+  throw new Error(
+    "suppressedThenTappedSuspected=true indicates gesture startup was incorrectly suppressed as already-active.",
+  );
+}
+
 async function skipIfRoomNotPlayable(page: Page): Promise<void> {
   const isClosed = await page
     .getByText("Screening has closed.")
@@ -603,6 +691,7 @@ test.describe("Room Playback", () => {
       "playback_progress_primary",
       gestureContext,
     );
+    await assertNoSuppressionPriorityRegression(page, testInfo, gestureContext);
   });
 
   test("cookie bypass reload + delayed gesture start remains stable", async (
@@ -684,6 +773,7 @@ test.describe("Room Playback", () => {
       "playback_progress_post_reload",
       secondGestureContext,
     );
+    await assertNoSuppressionPriorityRegression(page, testInfo, secondGestureContext);
 
     const startTime = await video.evaluate(
       (element) => (element as HTMLVideoElement).currentTime || 0,

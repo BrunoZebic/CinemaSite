@@ -12,6 +12,9 @@ import type {
   HlsRecoveryErrorClass,
   HlsRecoveryState,
   PlaybackStartState,
+  StartupAbortCause,
+  StartupRunEndedReason,
+  StartupSuppressedReason,
   VideoSyncDebugState,
   VideoSyncPlayerHandle,
 } from "@/components/Video/types";
@@ -21,7 +24,11 @@ import type {
   RoomBootstrap,
   ScreeningConfig,
 } from "@/lib/premiere/types";
-import { HlsPlaybackAdapter, type HlsFatalError } from "@/lib/video/hlsAdapter";
+import {
+  HlsPlaybackAdapter,
+  type HlsAdapterLifecycleDebug,
+  type HlsFatalError,
+} from "@/lib/video/hlsAdapter";
 import type { HlsPlaybackEngine } from "@/lib/video/hlsEngineSelection";
 
 const LOOP_INTERVAL_MS = 1500;
@@ -74,10 +81,27 @@ type SyncOptions = {
 type GestureOverlayPhase = "idle" | "accepting" | "exiting";
 type OperationOwner = "none" | "startup" | "token_refresh" | "recovery";
 type PendingReinitReason = "token_refresh" | "recovery" | null;
+type StartupSource =
+  | "gesture"
+  | "recovery_retry"
+  | "reinit_token_refresh"
+  | "resume"
+  | "phase_auto_bootstrap";
 type LastPlayAttempt =
   | "attempted"
   | "video_play_ok"
   | `video_play_failed:${string}`;
+type StartupRunCounterSnapshot = {
+  runId: number;
+  hlsInstanceIdAtStart: number;
+  attachCountAtStart: number;
+  detachCountAtStart: number;
+  srcSetCountAtStart: number;
+  loadCalledCountAtStart: number;
+  attachCountAtPlayAttempt: number | null;
+  srcSetCountAtAttach: number | null;
+  loadCalledCountAtPlayAttempt: number | null;
+};
 type HlsE2EProbeState = {
   playbackEngine: HlsPlaybackEngine;
   manifestParsed: boolean;
@@ -94,21 +118,40 @@ type HlsE2EProbeState = {
   pendingReinitReason: PendingReinitReason;
   requiresPriming: boolean;
   isPrimed: boolean;
+  primedForMountId: number | null;
   startupAttemptId: number;
   gestureTapCount: number;
   lastGestureAtMs: number | null;
   lastPlayAttempt: LastPlayAttempt | null;
   startupCalledFromGesture: boolean;
+  hlsInstanceId: number;
+  attachCount: number;
+  detachCount: number;
+  srcSetCount: number;
+  loadCalledCount: number;
+  videoElementMountId: number;
+  videoRefAssignedAtMs: number | null;
+  pauseCount: number;
+  lastPauseReason: string | null;
+  overlayTapHandledCount: number;
+  startupRunStartedCount: number;
+  startupRunAbortedCount: number;
+  startupWindowRunId: number | null;
+  startupWindowStartAtMs: number | null;
+  startupWindowEndAtMs: number | null;
+  runEndedReason: StartupRunEndedReason | null;
+  lastAbortCause: StartupAbortCause | null;
+  startupSuppressedReason: StartupSuppressedReason | null;
+  playAttemptRunId: number | null;
+  playAttemptStartAtMs: number | null;
+  doubleStartSuspected: boolean;
+  suppressedThenTappedSuspected: boolean;
 };
 
 declare global {
   interface Window {
     __HLS_E2E_PROBE__?: HlsE2EProbeState;
   }
-}
-
-function getPrimingKey(room: string): string {
-  return `playPrimed:${room}`;
 }
 
 function classifyFatalError(error: HlsFatalError): HlsRecoveryErrorClass {
@@ -200,6 +243,14 @@ function toFailedPlayAttempt(error: unknown): LastPlayAttempt {
   return `video_play_failed:${errorName}`;
 }
 
+const STARTUP_SOURCE_PRIORITY: Record<StartupSource, number> = {
+  phase_auto_bootstrap: 1,
+  resume: 2,
+  reinit_token_refresh: 3,
+  recovery_retry: 4,
+  gesture: 5,
+};
+
 const HlsSyncPlayer = forwardRef<VideoSyncPlayerHandle, HlsSyncPlayerProps>(
   function HlsSyncPlayer(
     {
@@ -220,6 +271,10 @@ const HlsSyncPlayer = forwardRef<VideoSyncPlayerHandle, HlsSyncPlayerProps>(
     ref,
   ) {
     const videoRef = useRef<HTMLVideoElement | null>(null);
+    const nextVideoElementMountIdRef = useRef(0);
+    const videoElementMountIdRef = useRef(0);
+    const videoRefAssignedAtMsRef = useRef<number | null>(null);
+    const primedForMountIdRef = useRef<number | null>(null);
     const adapterRef = useRef<HlsPlaybackAdapter | null>(null);
     const driftLoopRef = useRef<number | null>(null);
     const isDriftLoopActiveRef = useRef(false);
@@ -234,6 +289,7 @@ const HlsSyncPlayer = forwardRef<VideoSyncPlayerHandle, HlsSyncPlayerProps>(
     const screeningRef = useRef(screening);
     const finalManifestUrlRef = useRef(finalManifestUrl);
     const tokenExpiresAtRef = useRef(tokenExpiresAtUnixMs);
+    const requiresPrimingRef = useRef(requiresPriming);
     const playPrimedRef = useRef(false);
     const bufferingRef = useRef(false);
     const onBootstrapRefreshRef = useRef(onBootstrapRefresh);
@@ -247,6 +303,22 @@ const HlsSyncPlayer = forwardRef<VideoSyncPlayerHandle, HlsSyncPlayerProps>(
     const playIntentRef = useRef(false);
     const startupAttemptIdRef = useRef(0);
     const activeStartupAttemptRef = useRef(0);
+    const activeStartupSourceRef = useRef<StartupSource | null>(null);
+    const activeStartupRoomRef = useRef<string | null>(null);
+    const runCounterSnapshotRef = useRef<StartupRunCounterSnapshot | null>(null);
+    const startupRunStartedCountRef = useRef(0);
+    const startupRunAbortedCountRef = useRef(0);
+    const startupWindowRunIdRef = useRef<number | null>(null);
+    const startupWindowStartAtMsRef = useRef<number | null>(null);
+    const startupWindowEndAtMsRef = useRef<number | null>(null);
+    const runEndedReasonRef = useRef<StartupRunEndedReason | null>(null);
+    const lastAbortCauseRef = useRef<StartupAbortCause | null>(null);
+    const startupSuppressedReasonRef = useRef<StartupSuppressedReason | null>(null);
+    const startupSuppressedAtMsRef = useRef<number | null>(null);
+    const playAttemptRunIdRef = useRef<number | null>(null);
+    const playAttemptStartAtMsRef = useRef<number | null>(null);
+    const playingObservedInRunRef = useRef<number | null>(null);
+    const doubleStartSuspectedRef = useRef(false);
     const startupPlayingSinceRef = useRef<number | null>(null);
     const shortProgressCheckTimerRef = useRef<number | null>(null);
     const gestureOverlayAcceptTimerRef = useRef<number | null>(null);
@@ -256,6 +328,12 @@ const HlsSyncPlayer = forwardRef<VideoSyncPlayerHandle, HlsSyncPlayerProps>(
     const lastGestureAtMsRef = useRef<number | null>(null);
     const lastPlayAttemptRef = useRef<LastPlayAttempt | null>(null);
     const startupCalledFromGestureRef = useRef(false);
+    const overlayTapHandledCountRef = useRef(0);
+    const lastOverlayTapHandledAtMsRef = useRef<number | null>(null);
+    const pauseCountRef = useRef(0);
+    const lastPauseReasonRef = useRef<string | null>(null);
+    const lastPauseAtMsRef = useRef<number | null>(null);
+    const suppressedThenTappedSuspectedRef = useRef(false);
     const livePauseResumeTimerRef = useRef<number | null>(null);
     const livePauseCooldownUntilRef = useRef(0);
     const authRecoveryAttemptsRef = useRef<number[]>([]);
@@ -275,12 +353,16 @@ const HlsSyncPlayer = forwardRef<VideoSyncPlayerHandle, HlsSyncPlayerProps>(
     const syncToCanonicalTimeRef = useRef<(options?: SyncOptions) => Promise<void>>(
       async () => {},
     );
+    const maybeMarkStartupProgressReachedRef = useRef<
+      (runId: number, currentTime: number, paused: boolean) => void
+    >(() => {});
     const startPlaybackFromCanonicalRef = useRef<
       (
         options?: {
           forceHardSeek?: boolean;
           skipOnDemandRefresh?: boolean;
-          fromGesture?: boolean;
+          source?: StartupSource;
+          materialInfoChanged?: boolean;
         },
       ) => Promise<void>
     >(async () => {});
@@ -289,6 +371,7 @@ const HlsSyncPlayer = forwardRef<VideoSyncPlayerHandle, HlsSyncPlayerProps>(
         nextManifestUrl: string,
         options?: {
           readyTimeoutMs?: number;
+          startupSource?: StartupSource;
         },
       ) => Promise<void>
     >(async () => {});
@@ -330,6 +413,7 @@ const HlsSyncPlayer = forwardRef<VideoSyncPlayerHandle, HlsSyncPlayerProps>(
     const [isGestureOverlayMounted, setIsGestureOverlayMounted] = useState(false);
     const [gestureOverlayPhase, setGestureOverlayPhase] =
       useState<GestureOverlayPhase>("idle");
+    const [videoMountVersion, setVideoMountVersion] = useState(0);
     const driftDebugRef = useRef(driftDebug);
     const readyStateRef = useRef(readyState);
 
@@ -339,6 +423,7 @@ const HlsSyncPlayer = forwardRef<VideoSyncPlayerHandle, HlsSyncPlayerProps>(
     screeningRef.current = screening;
     finalManifestUrlRef.current = finalManifestUrl;
     tokenExpiresAtRef.current = tokenExpiresAtUnixMs;
+    requiresPrimingRef.current = requiresPriming;
     onBootstrapRefreshRef.current = onBootstrapRefresh;
     onDebugStateChangeRef.current = onDebugStateChange;
     channelStatusRef.current = channelStatus;
@@ -362,6 +447,48 @@ const HlsSyncPlayer = forwardRef<VideoSyncPlayerHandle, HlsSyncPlayerProps>(
         const playbackEngine = adapter?.getPlaybackEngine() ?? "unsupported";
         const manifestParsed = adapter?.isManifestParsed() ?? false;
         const nativeMetadataLoaded = adapter?.isNativeMetadataLoaded() ?? false;
+        const lifecycleDebug: HlsAdapterLifecycleDebug | null =
+          adapter?.getLifecycleDebug() ?? null;
+
+        const runSnapshot = runCounterSnapshotRef.current;
+        if (
+          lifecycleDebug &&
+          runSnapshot &&
+          activeStartupAttemptRef.current !== 0 &&
+          runSnapshot.runId === activeStartupAttemptRef.current
+        ) {
+          const inRecoveryHandoff = runEndedReasonRef.current === "handoff_to_recovery";
+          const hlsInstanceChanged =
+            lifecycleDebug.hlsInstanceId !== runSnapshot.hlsInstanceIdAtStart &&
+            runSnapshot.hlsInstanceIdAtStart !== 0;
+          const attachDelta =
+            lifecycleDebug.attachCount - runSnapshot.attachCountAtStart;
+          const attachMoreThanOnce = attachDelta > 1;
+          const attachAfterPlayAttempt =
+            runSnapshot.attachCountAtPlayAttempt !== null &&
+            lifecycleDebug.attachCount > runSnapshot.attachCountAtPlayAttempt;
+          const detachDelta =
+            lifecycleDebug.detachCount - runSnapshot.detachCountAtStart;
+          const srcSetAfterAttach =
+            runSnapshot.srcSetCountAtAttach !== null &&
+            lifecycleDebug.srcSetCount > runSnapshot.srcSetCountAtAttach;
+          const loadAfterPlayAttempt =
+            runSnapshot.loadCalledCountAtPlayAttempt !== null &&
+            lifecycleDebug.loadCalledCount > runSnapshot.loadCalledCountAtPlayAttempt;
+
+          const churnDetected =
+            hlsInstanceChanged ||
+            attachMoreThanOnce ||
+            attachAfterPlayAttempt ||
+            (!inRecoveryHandoff && detachDelta > 0) ||
+            (!inRecoveryHandoff && srcSetAfterAttach) ||
+            (!inRecoveryHandoff && loadAfterPlayAttempt);
+
+          if (churnDetected && !inRecoveryHandoff) {
+            doubleStartSuspectedRef.current = true;
+          }
+        }
+
         const nextDebugState: VideoSyncDebugState = {
           phase: phaseRef.current,
           playerTime: currentDriftDebug.playerTime,
@@ -390,11 +517,34 @@ const HlsSyncPlayer = forwardRef<VideoSyncPlayerHandle, HlsSyncPlayerProps>(
             : null,
           requiresPriming,
           isPrimed: playPrimedRef.current,
+          primedForMountId: primedForMountIdRef.current,
           startupAttemptId: startupAttemptIdRef.current,
           gestureTapCount: gestureTapCountRef.current,
           lastGestureAtMs: lastGestureAtMsRef.current,
           lastPlayAttempt: lastPlayAttemptRef.current,
           startupCalledFromGesture: startupCalledFromGestureRef.current,
+          hlsInstanceId: lifecycleDebug?.hlsInstanceId ?? 0,
+          attachCount: lifecycleDebug?.attachCount ?? 0,
+          detachCount: lifecycleDebug?.detachCount ?? 0,
+          srcSetCount: lifecycleDebug?.srcSetCount ?? 0,
+          loadCalledCount: lifecycleDebug?.loadCalledCount ?? 0,
+          videoElementMountId: videoElementMountIdRef.current,
+          videoRefAssignedAtMs: videoRefAssignedAtMsRef.current,
+          pauseCount: pauseCountRef.current,
+          lastPauseReason: lastPauseReasonRef.current,
+          overlayTapHandledCount: overlayTapHandledCountRef.current,
+          startupRunStartedCount: startupRunStartedCountRef.current,
+          startupRunAbortedCount: startupRunAbortedCountRef.current,
+          startupWindowRunId: startupWindowRunIdRef.current,
+          startupWindowStartAtMs: startupWindowStartAtMsRef.current,
+          startupWindowEndAtMs: startupWindowEndAtMsRef.current,
+          runEndedReason: runEndedReasonRef.current,
+          lastAbortCause: lastAbortCauseRef.current,
+          startupSuppressedReason: startupSuppressedReasonRef.current,
+          playAttemptRunId: playAttemptRunIdRef.current,
+          playAttemptStartAtMs: playAttemptStartAtMsRef.current,
+          doubleStartSuspected: doubleStartSuspectedRef.current,
+          suppressedThenTappedSuspected: suppressedThenTappedSuspectedRef.current,
           ...patch,
         };
 
@@ -415,6 +565,7 @@ const HlsSyncPlayer = forwardRef<VideoSyncPlayerHandle, HlsSyncPlayerProps>(
             pendingReinitReason: nextDebugState.pendingReinitReason ?? null,
             requiresPriming: Boolean(nextDebugState.requiresPriming),
             isPrimed: Boolean(nextDebugState.isPrimed),
+            primedForMountId: nextDebugState.primedForMountId ?? null,
             startupAttemptId: nextDebugState.startupAttemptId ?? 0,
             gestureTapCount: nextDebugState.gestureTapCount ?? 0,
             lastGestureAtMs: nextDebugState.lastGestureAtMs ?? null,
@@ -422,6 +573,30 @@ const HlsSyncPlayer = forwardRef<VideoSyncPlayerHandle, HlsSyncPlayerProps>(
               (nextDebugState.lastPlayAttempt as LastPlayAttempt | null) ?? null,
             startupCalledFromGesture: Boolean(
               nextDebugState.startupCalledFromGesture,
+            ),
+            hlsInstanceId: nextDebugState.hlsInstanceId ?? 0,
+            attachCount: nextDebugState.attachCount ?? 0,
+            detachCount: nextDebugState.detachCount ?? 0,
+            srcSetCount: nextDebugState.srcSetCount ?? 0,
+            loadCalledCount: nextDebugState.loadCalledCount ?? 0,
+            videoElementMountId: nextDebugState.videoElementMountId ?? 0,
+            videoRefAssignedAtMs: nextDebugState.videoRefAssignedAtMs ?? null,
+            pauseCount: nextDebugState.pauseCount ?? 0,
+            lastPauseReason: nextDebugState.lastPauseReason ?? null,
+            overlayTapHandledCount: nextDebugState.overlayTapHandledCount ?? 0,
+            startupRunStartedCount: nextDebugState.startupRunStartedCount ?? 0,
+            startupRunAbortedCount: nextDebugState.startupRunAbortedCount ?? 0,
+            startupWindowRunId: nextDebugState.startupWindowRunId ?? null,
+            startupWindowStartAtMs: nextDebugState.startupWindowStartAtMs ?? null,
+            startupWindowEndAtMs: nextDebugState.startupWindowEndAtMs ?? null,
+            runEndedReason: nextDebugState.runEndedReason ?? null,
+            lastAbortCause: nextDebugState.lastAbortCause ?? null,
+            startupSuppressedReason: nextDebugState.startupSuppressedReason ?? null,
+            playAttemptRunId: nextDebugState.playAttemptRunId ?? null,
+            playAttemptStartAtMs: nextDebugState.playAttemptStartAtMs ?? null,
+            doubleStartSuspected: Boolean(nextDebugState.doubleStartSuspected),
+            suppressedThenTappedSuspected: Boolean(
+              nextDebugState.suppressedThenTappedSuspected,
             ),
           };
         }
@@ -547,25 +722,169 @@ const HlsSyncPlayer = forwardRef<VideoSyncPlayerHandle, HlsSyncPlayerProps>(
       }, GESTURE_OVERLAY_ACCEPT_MS);
     }, [clearGestureOverlayTimers]);
 
-    const beginStartupAttempt = useCallback(() => {
-      const nextAttempt = startupAttemptIdRef.current + 1;
-      startupAttemptIdRef.current = nextAttempt;
-      activeStartupAttemptRef.current = nextAttempt;
-      return nextAttempt;
+    const clearPlayAttemptMarkers = useCallback(() => {
+      playAttemptRunIdRef.current = null;
+      playAttemptStartAtMsRef.current = null;
+      const runSnapshot = runCounterSnapshotRef.current;
+      if (runSnapshot) {
+        runSnapshot.attachCountAtPlayAttempt = null;
+        runSnapshot.loadCalledCountAtPlayAttempt = null;
+      }
     }, []);
 
-    const invalidateStartupAttempt = useCallback(() => {
-      const nextAttempt = startupAttemptIdRef.current + 1;
-      startupAttemptIdRef.current = nextAttempt;
-      activeStartupAttemptRef.current = 0;
-      clearShortProgressCheck();
-    }, [clearShortProgressCheck]);
+    const markStartupSuppressedReason = useCallback(
+      (reason: StartupSuppressedReason | null) => {
+        startupSuppressedReasonRef.current = reason;
+        startupSuppressedAtMsRef.current = reason ? Date.now() : null;
+
+        publishDebugState({
+          startupSuppressedReason: reason,
+          suppressedThenTappedSuspected: suppressedThenTappedSuspectedRef.current,
+        });
+      },
+      [publishDebugState],
+    );
+
+    const endStartupAttempt = useCallback(
+      (
+        runId: number,
+        reason: StartupRunEndedReason,
+        abortCause?: StartupAbortCause | null,
+      ) => {
+        if (runId === 0 || startupWindowRunIdRef.current !== runId) {
+          return;
+        }
+
+        runEndedReasonRef.current = reason;
+        lastAbortCauseRef.current =
+          reason === "aborted_other" ? (abortCause ?? "unknown_abort") : null;
+        startupWindowEndAtMsRef.current = Date.now();
+        if (reason === "aborted_by_supersession" || reason === "aborted_other") {
+          startupRunAbortedCountRef.current += 1;
+        }
+
+        if (playAttemptRunIdRef.current === runId) {
+          clearPlayAttemptMarkers();
+        }
+
+        if (activeStartupAttemptRef.current === runId) {
+          activeStartupAttemptRef.current = 0;
+          activeStartupSourceRef.current = null;
+          activeStartupRoomRef.current = null;
+        }
+
+        startupWindowRunIdRef.current = null;
+        startupWindowStartAtMsRef.current = null;
+        runCounterSnapshotRef.current = null;
+        playingObservedInRunRef.current = null;
+        startupSuppressedReasonRef.current = null;
+        startupSuppressedAtMsRef.current = null;
+
+        publishDebugState({
+          startupWindowRunId: null,
+          startupWindowStartAtMs: null,
+          startupWindowEndAtMs: startupWindowEndAtMsRef.current,
+          runEndedReason: runEndedReasonRef.current,
+          lastAbortCause: lastAbortCauseRef.current,
+          startupSuppressedReason: null,
+          startupRunAbortedCount: startupRunAbortedCountRef.current,
+          playAttemptRunId: null,
+          playAttemptStartAtMs: null,
+        });
+      },
+      [clearPlayAttemptMarkers, publishDebugState],
+    );
+
+    const beginStartupAttempt = useCallback(
+      (source: StartupSource) => {
+        const activeRunId = activeStartupAttemptRef.current;
+        if (activeRunId !== 0) {
+          endStartupAttempt(activeRunId, "aborted_by_supersession");
+        }
+
+        const nextAttempt = startupAttemptIdRef.current + 1;
+        startupAttemptIdRef.current = nextAttempt;
+        activeStartupAttemptRef.current = nextAttempt;
+        activeStartupSourceRef.current = source;
+        activeStartupRoomRef.current = room;
+        startupWindowRunIdRef.current = nextAttempt;
+        startupWindowStartAtMsRef.current = Date.now();
+        startupWindowEndAtMsRef.current = null;
+        runEndedReasonRef.current = null;
+        lastAbortCauseRef.current = null;
+        startupRunStartedCountRef.current += 1;
+        clearPlayAttemptMarkers();
+        markStartupSuppressedReason(null);
+        if (source === "gesture" && !startupCalledFromGestureRef.current) {
+          startupCalledFromGestureRef.current = true;
+        }
+
+        const lifecycle = adapterRef.current?.getLifecycleDebug();
+        if (lifecycle) {
+          runCounterSnapshotRef.current = {
+            runId: nextAttempt,
+            hlsInstanceIdAtStart: lifecycle.hlsInstanceId,
+            attachCountAtStart: lifecycle.attachCount,
+            detachCountAtStart: lifecycle.detachCount,
+            srcSetCountAtStart: lifecycle.srcSetCount,
+            loadCalledCountAtStart: lifecycle.loadCalledCount,
+            attachCountAtPlayAttempt: null,
+            srcSetCountAtAttach: lifecycle.srcSetCount,
+            loadCalledCountAtPlayAttempt: null,
+          };
+        } else {
+          runCounterSnapshotRef.current = null;
+        }
+        doubleStartSuspectedRef.current = false;
+
+        publishDebugState({
+          startupAttemptId: nextAttempt,
+          startupWindowRunId: nextAttempt,
+          startupWindowStartAtMs: startupWindowStartAtMsRef.current,
+          startupWindowEndAtMs: null,
+          runEndedReason: null,
+          lastAbortCause: null,
+          startupRunStartedCount: startupRunStartedCountRef.current,
+          startupRunAbortedCount: startupRunAbortedCountRef.current,
+          startupCalledFromGesture: startupCalledFromGestureRef.current,
+        });
+
+        return nextAttempt;
+      },
+      [
+        clearPlayAttemptMarkers,
+        endStartupAttempt,
+        markStartupSuppressedReason,
+        publishDebugState,
+        room,
+      ],
+    );
+
+    const invalidateStartupAttempt = useCallback(
+      (options?: {
+        runEndedReason?: StartupRunEndedReason;
+        abortCause?: StartupAbortCause | null;
+      }) => {
+        const activeRunId = activeStartupAttemptRef.current;
+        if (activeRunId !== 0) {
+          endStartupAttempt(
+            activeRunId,
+            options?.runEndedReason ?? "aborted_other",
+            options?.abortCause ?? null,
+          );
+        }
+        clearPlayAttemptMarkers();
+        clearShortProgressCheck();
+      },
+      [clearPlayAttemptMarkers, clearShortProgressCheck, endStartupAttempt],
+    );
 
     const isStartupAttemptActive = useCallback((attemptId: number) => {
       return (
         attemptId !== 0 &&
-        attemptId === startupAttemptIdRef.current &&
-        attemptId === activeStartupAttemptRef.current
+        attemptId === activeStartupAttemptRef.current &&
+        startupWindowRunIdRef.current === attemptId &&
+        runEndedReasonRef.current === null
       );
     }, []);
 
@@ -618,7 +937,12 @@ const HlsSyncPlayer = forwardRef<VideoSyncPlayerHandle, HlsSyncPlayerProps>(
 
         reinitLockRef.current = true;
         operationOwnerRef.current = owner;
-        invalidateStartupAttempt();
+        if (phaseRef.current === "LIVE" && activeStartupAttemptRef.current !== 0) {
+          endStartupAttempt(activeStartupAttemptRef.current, "handoff_to_recovery");
+        }
+        invalidateStartupAttempt({
+          runEndedReason: "handoff_to_recovery",
+        });
         setStatusForOwner(owner);
         publishDebugState({
           operationOwner: owner,
@@ -649,6 +973,7 @@ const HlsSyncPlayer = forwardRef<VideoSyncPlayerHandle, HlsSyncPlayerProps>(
         }
       },
       [
+        endStartupAttempt,
         invalidateStartupAttempt,
         markPendingReinit,
         publishDebugState,
@@ -669,19 +994,63 @@ const HlsSyncPlayer = forwardRef<VideoSyncPlayerHandle, HlsSyncPlayerProps>(
 
     const setPrimed = useCallback(
       (value: boolean) => {
-        playPrimedRef.current = value;
-        setIsPrimed(value);
-        const key = getPrimingKey(room);
-        if (value) {
-          window.sessionStorage.setItem(key, "1");
-        } else {
-          window.sessionStorage.removeItem(key);
-        }
+        const mountId = videoElementMountIdRef.current;
+        primedForMountIdRef.current = value && mountId !== 0 ? mountId : null;
+        const primed = primedForMountIdRef.current === mountId && mountId !== 0;
+        playPrimedRef.current = primed;
+        setIsPrimed(primed);
         publishDebugState({
-          isPrimed: value,
+          isPrimed: primed,
+          primedForMountId: primedForMountIdRef.current,
         });
       },
-      [publishDebugState, room],
+      [publishDebugState],
+    );
+
+    const markOverlayTapHandled = useCallback(() => {
+      overlayTapHandledCountRef.current += 1;
+      lastOverlayTapHandledAtMsRef.current = Date.now();
+      publishDebugState({
+        overlayTapHandledCount: overlayTapHandledCountRef.current,
+        suppressedThenTappedSuspected: suppressedThenTappedSuspectedRef.current,
+      });
+    }, [publishDebugState]);
+
+    const markPauseReason = useCallback(
+      (reason: string) => {
+        pauseCountRef.current += 1;
+        lastPauseReasonRef.current = reason;
+        lastPauseAtMsRef.current = Date.now();
+        publishDebugState({
+          pauseCount: pauseCountRef.current,
+          lastPauseReason: reason,
+        });
+      },
+      [publishDebugState],
+    );
+
+    const pauseAdapterWithReason = useCallback(
+      async (reason: string) => {
+        const adapter = adapterRef.current;
+        if (!adapter) {
+          return;
+        }
+        markPauseReason(reason);
+        await adapter.pause();
+      },
+      [markPauseReason],
+    );
+
+    const pauseVideoWithReason = useCallback(
+      (reason: string) => {
+        const video = videoRef.current;
+        if (!video) {
+          return;
+        }
+        markPauseReason(reason);
+        video.pause();
+      },
+      [markPauseReason],
     );
 
     const markGestureTap = useCallback(() => {
@@ -715,26 +1084,20 @@ const HlsSyncPlayer = forwardRef<VideoSyncPlayerHandle, HlsSyncPlayerProps>(
       [publishDebugState],
     );
 
-    const markStartupCalledFromGesture = useCallback(() => {
-      if (startupCalledFromGestureRef.current) {
-        return;
-      }
-      startupCalledFromGestureRef.current = true;
-      publishDebugState({
-        startupCalledFromGesture: true,
-      });
-    }, [publishDebugState]);
-
     const resetGestureProbeState = useCallback(() => {
       gestureTapCountRef.current = 0;
       lastGestureAtMsRef.current = null;
       lastPlayAttemptRef.current = null;
       startupCalledFromGestureRef.current = false;
+      overlayTapHandledCountRef.current = 0;
+      suppressedThenTappedSuspectedRef.current = false;
       publishDebugState({
         gestureTapCount: 0,
         lastGestureAtMs: null,
         lastPlayAttempt: null,
         startupCalledFromGesture: false,
+        overlayTapHandledCount: 0,
+        suppressedThenTappedSuspected: false,
       });
     }, [publishDebugState]);
 
@@ -743,6 +1106,41 @@ const HlsSyncPlayer = forwardRef<VideoSyncPlayerHandle, HlsSyncPlayerProps>(
         updateLastPlayAttempt(toFailedPlayAttempt(error));
       },
       [updateLastPlayAttempt],
+    );
+
+    const markPlayAttemptStart = useCallback(
+      (runId: number) => {
+        const snapshot = runCounterSnapshotRef.current;
+        const lifecycle = adapterRef.current?.getLifecycleDebug();
+        playAttemptRunIdRef.current = runId;
+        playAttemptStartAtMsRef.current = Date.now();
+        if (snapshot && snapshot.runId === runId && lifecycle) {
+          snapshot.attachCountAtPlayAttempt = lifecycle.attachCount;
+          snapshot.loadCalledCountAtPlayAttempt = lifecycle.loadCalledCount;
+        }
+        publishDebugState({
+          playAttemptRunId: runId,
+          playAttemptStartAtMs: playAttemptStartAtMsRef.current,
+        });
+      },
+      [publishDebugState],
+    );
+
+    const maybeMarkStartupProgressReached = useCallback(
+      (runId: number, currentTime: number, paused: boolean) => {
+        if (!isStartupAttemptActive(runId)) {
+          return;
+        }
+        if (currentTime <= 0.25) {
+          return;
+        }
+        const playingObserved = playingObservedInRunRef.current === runId;
+        if (paused && !playingObserved) {
+          return;
+        }
+        endStartupAttempt(runId, "progress_reached");
+      },
+      [endStartupAttempt, isStartupAttemptActive],
     );
 
     const computeTargetTimeSec = useCallback(() => {
@@ -896,7 +1294,7 @@ const HlsSyncPlayer = forwardRef<VideoSyncPlayerHandle, HlsSyncPlayerProps>(
           playIntentRef.current = false;
           softCorrectionStartedAtRef.current = null;
           liveAlignmentDoneRef.current = false;
-          await adapter.pause();
+          await pauseAdapterWithReason("phase_waiting");
           await adapter.seekTo(0);
           bufferingRef.current = false;
           setBuffering(false);
@@ -921,7 +1319,7 @@ const HlsSyncPlayer = forwardRef<VideoSyncPlayerHandle, HlsSyncPlayerProps>(
         if (currentPhase === "SILENCE") {
           playIntentRef.current = false;
           softCorrectionStartedAtRef.current = null;
-          await adapter.pause();
+          await pauseAdapterWithReason("phase_silence");
           bufferingRef.current = false;
           setBuffering(false);
           clearShortProgressCheck();
@@ -938,7 +1336,9 @@ const HlsSyncPlayer = forwardRef<VideoSyncPlayerHandle, HlsSyncPlayerProps>(
         if (currentPhase === "DISCUSSION" || currentPhase === "CLOSED") {
           playIntentRef.current = false;
           softCorrectionStartedAtRef.current = null;
-          await adapter.pause();
+          await pauseAdapterWithReason(
+            currentPhase === "DISCUSSION" ? "phase_discussion" : "phase_closed",
+          );
           bufferingRef.current = false;
           setBuffering(false);
           clearShortProgressCheck();
@@ -958,7 +1358,7 @@ const HlsSyncPlayer = forwardRef<VideoSyncPlayerHandle, HlsSyncPlayerProps>(
 
         if (requiresPriming && !playPrimedRef.current) {
           playIntentRef.current = false;
-          await adapter.pause();
+          await pauseAdapterWithReason("priming_required");
           setAutoplayBlockedState(false);
           bufferingRef.current = false;
           setBuffering(false);
@@ -1113,6 +1513,7 @@ const HlsSyncPlayer = forwardRef<VideoSyncPlayerHandle, HlsSyncPlayerProps>(
       [
         clearShortProgressCheck,
         computeTargetTimeSec,
+        pauseAdapterWithReason,
         publishDebugState,
         requiresPriming,
         setAutoplayBlockedState,
@@ -1129,7 +1530,8 @@ const HlsSyncPlayer = forwardRef<VideoSyncPlayerHandle, HlsSyncPlayerProps>(
         options?: {
           forceHardSeek?: boolean;
           skipOnDemandRefresh?: boolean;
-          fromGesture?: boolean;
+          source?: StartupSource;
+          materialInfoChanged?: boolean;
         },
       ) => {
         const adapter = adapterRef.current;
@@ -1138,6 +1540,10 @@ const HlsSyncPlayer = forwardRef<VideoSyncPlayerHandle, HlsSyncPlayerProps>(
         if (!adapter || !activeScreening || !video) {
           return;
         }
+        if (phaseRef.current !== "LIVE") {
+          return;
+        }
+        const source = options?.source ?? "phase_auto_bootstrap";
 
         const ownsStartupStatus = operationOwnerRef.current === "none";
         if (ownsStartupStatus) {
@@ -1150,23 +1556,45 @@ const HlsSyncPlayer = forwardRef<VideoSyncPlayerHandle, HlsSyncPlayerProps>(
 
         let attemptId = 0;
         try {
-          playIntentRef.current = true;
-          setAutoplayBlockedState(false);
-          bufferingRef.current = false;
-          setBuffering(false);
-          clearShortProgressCheck();
-
-          if (requiresPriming && !playPrimedRef.current) {
+          if (source !== "gesture" && requiresPriming && !playPrimedRef.current) {
+            markStartupSuppressedReason("priming_required");
             playIntentRef.current = false;
             updatePlaybackStartState("PRIMING_REQUIRED");
             stopDriftLoop();
-            await adapter.pause();
+            await pauseAdapterWithReason("startup_suppressed_priming_required");
             publishDebugState({
               playbackStartState: "PRIMING_REQUIRED",
               playIntentActive: false,
             });
             return;
           }
+
+          const activeRunId = activeStartupAttemptRef.current;
+          if (
+            source !== "gesture" &&
+            activeRunId !== 0 &&
+            runEndedReasonRef.current === null
+          ) {
+            const activeSource =
+              activeStartupSourceRef.current ?? "phase_auto_bootstrap";
+            const incomingPriority = STARTUP_SOURCE_PRIORITY[source];
+            const activePriority = STARTUP_SOURCE_PRIORITY[activeSource];
+            const equivalentRunAlreadyActive =
+              activeStartupRoomRef.current === room &&
+              incomingPriority <= activePriority &&
+              !options?.materialInfoChanged;
+            if (equivalentRunAlreadyActive) {
+              markStartupSuppressedReason("already_active_run");
+              return;
+            }
+          }
+
+          markStartupSuppressedReason(null);
+          playIntentRef.current = true;
+          setAutoplayBlockedState(false);
+          bufferingRef.current = false;
+          setBuffering(false);
+          clearShortProgressCheck();
 
           const startupNow = Date.now();
           const startupAuthRecentlyFailed =
@@ -1180,9 +1608,7 @@ const HlsSyncPlayer = forwardRef<VideoSyncPlayerHandle, HlsSyncPlayerProps>(
           const shouldRunStartupRefresh =
             startupAuthRecentlyFailed ||
             startupMsUntilExpiry <= STARTUP_ON_DEMAND_REFRESH_THRESHOLD_MS;
-          const startupFromGesture = Boolean(
-            options?.fromGesture || gestureTapInFlightRef.current,
-          );
+          const startupFromGesture = source === "gesture";
           const startupTokenExpired = startupMsUntilExpiry <= 0;
 
           if (
@@ -1207,6 +1633,7 @@ const HlsSyncPlayer = forwardRef<VideoSyncPlayerHandle, HlsSyncPlayerProps>(
                 }
                 await reinitializeWithUrlRef.current(refreshedUrl, {
                   readyTimeoutMs: RECOVERY_READY_TIMEOUT_MS,
+                  startupSource: "reinit_token_refresh",
                 });
               });
               if (!didRefresh) {
@@ -1217,7 +1644,7 @@ const HlsSyncPlayer = forwardRef<VideoSyncPlayerHandle, HlsSyncPlayerProps>(
             }
           }
 
-          attemptId = beginStartupAttempt();
+          attemptId = beginStartupAttempt(source);
           updatePlaybackStartState("STARTING");
 
           await adapter.waitUntilReady(READY_TIMEOUT_MS);
@@ -1240,7 +1667,39 @@ const HlsSyncPlayer = forwardRef<VideoSyncPlayerHandle, HlsSyncPlayerProps>(
             setIsMuted(true);
           }
 
-          await adapter.play();
+          markPlayAttemptStart(attemptId);
+          updateLastPlayAttempt("attempted");
+          try {
+            await adapter.play();
+            updateLastPlayAttempt("video_play_ok");
+          } catch (playError) {
+            if (!isStartupAttemptActive(attemptId)) {
+              return;
+            }
+            updateLastPlayAttempt(toFailedPlayAttempt(playError));
+            if (
+              playError instanceof Error &&
+              playError.name === "AbortError" &&
+              attemptId !== 0
+            ) {
+              const wasPausedByKnownReason =
+                playAttemptStartAtMsRef.current !== null &&
+                lastPauseAtMsRef.current !== null &&
+                lastPauseAtMsRef.current >= playAttemptStartAtMsRef.current;
+              if (wasPausedByKnownReason) {
+                const pauseReason = lastPauseReasonRef.current ?? "unknown";
+                endStartupAttempt(
+                  attemptId,
+                  "aborted_other",
+                  `aborted_by_pause_reason:${pauseReason}`,
+                );
+              } else {
+                endStartupAttempt(attemptId, "aborted_other", "unknown_abort");
+              }
+              return;
+            }
+            throw playError;
+          }
 
           if (!isStartupAttemptActive(attemptId)) {
             return;
@@ -1261,6 +1720,7 @@ const HlsSyncPlayer = forwardRef<VideoSyncPlayerHandle, HlsSyncPlayerProps>(
             autoplayBlocked: false,
             playIntentActive: true,
           });
+          maybeMarkStartupProgressReached(attemptId, playerNow, video.paused);
 
           await syncToCanonicalTime({
             forceHardSeek: options?.forceHardSeek,
@@ -1277,6 +1737,9 @@ const HlsSyncPlayer = forwardRef<VideoSyncPlayerHandle, HlsSyncPlayerProps>(
               requiresPriming ? "PRIMING_REQUIRED" : "BLOCKED_AUTOPLAY",
             );
             stopDriftLoop();
+            if (attemptId !== 0) {
+              endStartupAttempt(attemptId, "play_failed");
+            }
             publishDebugState({
               playbackStartState: requiresPriming
                 ? "PRIMING_REQUIRED"
@@ -1291,6 +1754,31 @@ const HlsSyncPlayer = forwardRef<VideoSyncPlayerHandle, HlsSyncPlayerProps>(
             lastAuthErrorAtMsRef.current = Date.now();
           }
 
+          if (
+            attemptId !== 0 &&
+            error instanceof Error &&
+            error.name === "AbortError"
+          ) {
+            const wasPausedByKnownReason =
+              playAttemptStartAtMsRef.current !== null &&
+              lastPauseAtMsRef.current !== null &&
+              lastPauseAtMsRef.current >= playAttemptStartAtMsRef.current;
+            if (wasPausedByKnownReason) {
+              const pauseReason = lastPauseReasonRef.current ?? "unknown";
+              endStartupAttempt(
+                attemptId,
+                "aborted_other",
+                `aborted_by_pause_reason:${pauseReason}`,
+              );
+            } else {
+              endStartupAttempt(attemptId, "aborted_other", "unknown_abort");
+            }
+            return;
+          }
+
+          if (attemptId !== 0) {
+            endStartupAttempt(attemptId, "play_failed");
+          }
           throw error;
         } finally {
           if (ownsStartupStatus && operationOwnerRef.current === "startup") {
@@ -1305,8 +1793,13 @@ const HlsSyncPlayer = forwardRef<VideoSyncPlayerHandle, HlsSyncPlayerProps>(
         beginStartupAttempt,
         clearShortProgressCheck,
         computeTargetTimeSec,
+        endStartupAttempt,
         isStartupAttemptActive,
+        markPlayAttemptStart,
         publishDebugState,
+        markStartupSuppressedReason,
+        pauseAdapterWithReason,
+        maybeMarkStartupProgressReached,
         requiresPriming,
         markPendingReinit,
         runSerializedReinit,
@@ -1315,9 +1808,11 @@ const HlsSyncPlayer = forwardRef<VideoSyncPlayerHandle, HlsSyncPlayerProps>(
         setStatusForOwner,
         stopDriftLoop,
         syncToCanonicalTime,
+        updateLastPlayAttempt,
         updatePlaybackStartState,
         updateRecoveryState,
         waitForSeekSettled,
+        room,
       ],
     );
 
@@ -1326,6 +1821,7 @@ const HlsSyncPlayer = forwardRef<VideoSyncPlayerHandle, HlsSyncPlayerProps>(
         nextManifestUrl: string,
         options?: {
           readyTimeoutMs?: number;
+          startupSource?: StartupSource;
         },
       ) => {
         const adapter = adapterRef.current;
@@ -1334,7 +1830,9 @@ const HlsSyncPlayer = forwardRef<VideoSyncPlayerHandle, HlsSyncPlayerProps>(
           throw new Error("Playback adapter is unavailable.");
         }
 
-        invalidateStartupAttempt();
+        invalidateStartupAttempt({
+          runEndedReason: "handoff_to_recovery",
+        });
         stopDriftLoop();
         setIsPlayerReady(false);
         clearShortProgressCheck();
@@ -1347,9 +1845,19 @@ const HlsSyncPlayer = forwardRef<VideoSyncPlayerHandle, HlsSyncPlayerProps>(
         liveAlignmentDoneRef.current = false;
         lastResyncAtRef.current = Date.now();
         if (phaseRef.current === "LIVE") {
+          if (requiresPrimingRef.current && !playPrimedRef.current) {
+            updatePlaybackStartState("PRIMING_REQUIRED");
+            publishDebugState({
+              playbackStartState: "PRIMING_REQUIRED",
+              playIntentActive: false,
+            });
+            return;
+          }
           await startPlaybackFromCanonical({
             forceHardSeek: true,
             skipOnDemandRefresh: true,
+            source: options?.startupSource ?? "reinit_token_refresh",
+            materialInfoChanged: true,
           });
         } else {
           await syncToCanonicalTime({
@@ -1367,6 +1875,7 @@ const HlsSyncPlayer = forwardRef<VideoSyncPlayerHandle, HlsSyncPlayerProps>(
         startPlaybackFromCanonical,
         stopDriftLoop,
         syncToCanonicalTime,
+        updatePlaybackStartState,
       ],
     );
 
@@ -1407,6 +1916,7 @@ const HlsSyncPlayer = forwardRef<VideoSyncPlayerHandle, HlsSyncPlayerProps>(
           }
           await reinitializeWithUrl(refreshedUrl, {
             readyTimeoutMs: RECOVERY_READY_TIMEOUT_MS,
+            startupSource: "reinit_token_refresh",
           });
         });
 
@@ -1535,6 +2045,7 @@ const HlsSyncPlayer = forwardRef<VideoSyncPlayerHandle, HlsSyncPlayerProps>(
         const didRun = await runSerializedReinit("recovery", async () => {
           await reinitializeWithUrl(currentUrl, {
             readyTimeoutMs: RECOVERY_READY_TIMEOUT_MS,
+            startupSource: "recovery_retry",
           });
         });
         if (!didRun) {
@@ -1556,6 +2067,7 @@ const HlsSyncPlayer = forwardRef<VideoSyncPlayerHandle, HlsSyncPlayerProps>(
           }
           await reinitializeWithUrl(refreshedUrl, {
             readyTimeoutMs: RECOVERY_READY_TIMEOUT_MS,
+            startupSource: "recovery_retry",
           });
         });
         if (!didRun) {
@@ -1613,6 +2125,7 @@ const HlsSyncPlayer = forwardRef<VideoSyncPlayerHandle, HlsSyncPlayerProps>(
 
               await reinitializeWithUrl(nextUrl, {
                 readyTimeoutMs: RECOVERY_READY_TIMEOUT_MS,
+                startupSource: "recovery_retry",
               });
             });
             if (!didRun) {
@@ -1628,7 +2141,7 @@ const HlsSyncPlayer = forwardRef<VideoSyncPlayerHandle, HlsSyncPlayerProps>(
             const adapter = adapterRef.current;
             if (adapter) {
               try {
-                await adapter.pause();
+                await pauseAdapterWithReason("media_stall_recovery");
                 await adapter.play();
                 await syncToCanonicalTime({
                   forceHardSeek: true,
@@ -1673,6 +2186,7 @@ const HlsSyncPlayer = forwardRef<VideoSyncPlayerHandle, HlsSyncPlayerProps>(
       },
       [
         enterDegradedState,
+        pauseAdapterWithReason,
         publishDebugState,
         recoverNetworkOrParse,
         reinitializeWithUrl,
@@ -1720,6 +2234,7 @@ const HlsSyncPlayer = forwardRef<VideoSyncPlayerHandle, HlsSyncPlayerProps>(
     );
 
     syncToCanonicalTimeRef.current = syncToCanonicalTime;
+    maybeMarkStartupProgressReachedRef.current = maybeMarkStartupProgressReached;
     startPlaybackFromCanonicalRef.current = startPlaybackFromCanonical;
     reinitializeWithUrlRef.current = reinitializeWithUrl;
     recoverFromPlaybackFailureRef.current = recoverFromPlaybackFailure;
@@ -1790,17 +2305,27 @@ const HlsSyncPlayer = forwardRef<VideoSyncPlayerHandle, HlsSyncPlayerProps>(
     ]);
 
     useEffect(() => {
-      const primed = window.sessionStorage.getItem(getPrimingKey(room)) === "1";
-      playPrimedRef.current = primed;
-      setIsPrimed(primed);
+      primedForMountIdRef.current = null;
+      playPrimedRef.current = false;
+      setIsPrimed(false);
       setAutoplayBlockedState(false);
+      markStartupSuppressedReason(null);
       resetGestureProbeState();
       updatePlaybackStartState("IDLE", {
         keepStatus: true,
       });
-      invalidateStartupAttempt();
+      invalidateStartupAttempt({
+        runEndedReason: "aborted_other",
+        abortCause: "unknown_abort",
+      });
+      publishDebugState({
+        isPrimed: false,
+        primedForMountId: null,
+      });
     }, [
       invalidateStartupAttempt,
+      markStartupSuppressedReason,
+      publishDebugState,
       room,
       resetGestureProbeState,
       setAutoplayBlockedState,
@@ -1822,6 +2347,14 @@ const HlsSyncPlayer = forwardRef<VideoSyncPlayerHandle, HlsSyncPlayerProps>(
           lastProgressAtRef.current = Date.now();
           lastKnownCurrentTimeRef.current = nextTime;
         }
+        const activeRunId = activeStartupAttemptRef.current;
+        if (activeRunId !== 0 && startupWindowRunIdRef.current === activeRunId) {
+          maybeMarkStartupProgressReachedRef.current(
+            activeRunId,
+            nextTime,
+            video.paused,
+          );
+        }
         setPlayerTime((current) =>
           Math.abs(current - nextTime) >= 0.05 ? nextTime : current,
         );
@@ -1833,6 +2366,15 @@ const HlsSyncPlayer = forwardRef<VideoSyncPlayerHandle, HlsSyncPlayerProps>(
       const onPlay = () => {
         setIsPlaying(true);
         lastProgressAtRef.current = Date.now();
+        const activeRunId = activeStartupAttemptRef.current;
+        if (activeRunId !== 0 && startupWindowRunIdRef.current === activeRunId) {
+          playingObservedInRunRef.current = activeRunId;
+          maybeMarkStartupProgressReachedRef.current(
+            activeRunId,
+            video.currentTime || 0,
+            false,
+          );
+        }
       };
       const onPause = () => {
         setIsPlaying(false);
@@ -1854,8 +2396,12 @@ const HlsSyncPlayer = forwardRef<VideoSyncPlayerHandle, HlsSyncPlayerProps>(
           if (phaseRef.current !== "LIVE" || !playIntentRef.current || !video.paused) {
             return;
           }
+          if (requiresPrimingRef.current && !playPrimedRef.current) {
+            return;
+          }
           void startPlaybackFromCanonicalRef.current({
             forceHardSeek: false,
+            source: "resume",
           });
         }, LIVE_PAUSE_RESUME_COOLDOWN_MS);
       };
@@ -1933,8 +2479,7 @@ const HlsSyncPlayer = forwardRef<VideoSyncPlayerHandle, HlsSyncPlayerProps>(
         video.removeEventListener("playing", onRecovered);
         video.removeEventListener("error", onError);
       };
-    }, [
-    ]);
+    }, [videoMountVersion]);
 
     useEffect(() => {
       if (!hasAccess || !screening || screening.videoProvider !== "hls") {
@@ -1988,8 +2533,13 @@ const HlsSyncPlayer = forwardRef<VideoSyncPlayerHandle, HlsSyncPlayerProps>(
           networkRecoveryStepRef.current = 0;
           if (phaseRef.current === "LIVE") {
             authRecoveryAttemptsRef.current = [];
+            if (requiresPriming && !playPrimedRef.current) {
+              updatePlaybackStartState("PRIMING_REQUIRED");
+              return;
+            }
             await startPlaybackFromCanonical({
               forceHardSeek: true,
+              source: "phase_auto_bootstrap",
             });
             return;
           }
@@ -2049,6 +2599,7 @@ const HlsSyncPlayer = forwardRef<VideoSyncPlayerHandle, HlsSyncPlayerProps>(
       playbackConfigError,
       publishDebugState,
       recoverFromPlaybackFailure,
+      requiresPriming,
       screening,
       setAutoplayBlockedState,
       setStatusIfChanged,
@@ -2059,6 +2610,7 @@ const HlsSyncPlayer = forwardRef<VideoSyncPlayerHandle, HlsSyncPlayerProps>(
       updatePlaybackStartState,
       updateRecoveryState,
       attemptRecovery,
+      videoMountVersion,
     ]);
 
     useEffect(() => {
@@ -2071,15 +2623,27 @@ const HlsSyncPlayer = forwardRef<VideoSyncPlayerHandle, HlsSyncPlayerProps>(
 
       const timer = window.setTimeout(() => {
         if (phase === "LIVE") {
+          if (requiresPriming && !playPrimedRef.current) {
+            updatePlaybackStartState("PRIMING_REQUIRED");
+            return;
+          }
           void startPlaybackFromCanonical({
             forceHardSeek: false,
+            source: "phase_auto_bootstrap",
           });
           return;
         }
         void syncToCanonicalTime();
       }, 0);
       return () => window.clearTimeout(timer);
-    }, [isPlayerReady, phase, startPlaybackFromCanonical, syncToCanonicalTime]);
+    }, [
+      isPlayerReady,
+      phase,
+      requiresPriming,
+      startPlaybackFromCanonical,
+      syncToCanonicalTime,
+      updatePlaybackStartState,
+    ]);
 
     useEffect(() => {
       const adapter = adapterRef.current;
@@ -2221,11 +2785,13 @@ const HlsSyncPlayer = forwardRef<VideoSyncPlayerHandle, HlsSyncPlayerProps>(
         return;
       }
       gestureTapInFlightRef.current = true;
+      markOverlayTapHandled();
       markGestureTap();
       updateLastPlayAttempt("attempted");
 
       video.muted = true;
       setIsMuted(true);
+      setPrimed(true);
 
       void (async () => {
         try {
@@ -2234,10 +2800,13 @@ const HlsSyncPlayer = forwardRef<VideoSyncPlayerHandle, HlsSyncPlayerProps>(
             updateLastPlayAttempt("video_play_ok");
           } catch (error) {
             markGesturePlayFailure(error);
-            throw error;
+            if (isAutoplayBlockedError(error)) {
+              throw error;
+            }
+            if (!(error instanceof Error) || error.name !== "AbortError") {
+              throw error;
+            }
           }
-
-          setPrimed(true);
 
           if (phaseRef.current === "WAITING") {
             playIntentRef.current = false;
@@ -2249,17 +2818,16 @@ const HlsSyncPlayer = forwardRef<VideoSyncPlayerHandle, HlsSyncPlayerProps>(
             });
             setStatusIfChanged("Playback primed. Waiting for start.");
             window.requestAnimationFrame(() => {
-              void video.pause();
+              pauseVideoWithReason("gesture_waiting_prime");
             });
             beginGestureOverlayDismissal();
             return;
           }
 
           beginGestureOverlayDismissal();
-          markStartupCalledFromGesture();
           await startPlaybackFromCanonical({
             forceHardSeek: true,
-            fromGesture: true,
+            source: "gesture",
           });
         } catch (error) {
           console.error(error);
@@ -2285,16 +2853,53 @@ const HlsSyncPlayer = forwardRef<VideoSyncPlayerHandle, HlsSyncPlayerProps>(
       clearShortProgressCheck,
       markGesturePlayFailure,
       markGestureTap,
+      markOverlayTapHandled,
+      pauseVideoWithReason,
       requiresPriming,
       setAutoplayBlockedState,
       setPrimed,
       setStatusIfChanged,
       startPlaybackFromCanonical,
       stopDriftLoop,
-      markStartupCalledFromGesture,
       updateLastPlayAttempt,
       updatePlaybackStartState,
     ]);
+
+    const assignVideoRef = useCallback(
+      (node: HTMLVideoElement | null) => {
+        videoRef.current = node;
+        if (!node) {
+          videoRefAssignedAtMsRef.current = null;
+          videoElementMountIdRef.current = 0;
+          primedForMountIdRef.current = null;
+          playPrimedRef.current = false;
+          setIsPrimed(false);
+          publishDebugState({
+            videoElementMountId: 0,
+            videoRefAssignedAtMs: null,
+            isPrimed: false,
+            primedForMountId: null,
+          });
+          return;
+        }
+
+        nextVideoElementMountIdRef.current += 1;
+        const mountId = nextVideoElementMountIdRef.current;
+        videoElementMountIdRef.current = mountId;
+        videoRefAssignedAtMsRef.current = Date.now();
+        const primed = primedForMountIdRef.current === mountId;
+        playPrimedRef.current = primed;
+        setIsPrimed(primed);
+        setVideoMountVersion((current) => current + 1);
+        publishDebugState({
+          videoElementMountId: mountId,
+          videoRefAssignedAtMs: videoRefAssignedAtMsRef.current,
+          isPrimed: primed,
+          primedForMountId: primedForMountIdRef.current,
+        });
+      },
+      [publishDebugState],
+    );
 
     const handleToggleMute = useCallback(() => {
       const video = videoRef.current;
@@ -2383,6 +2988,7 @@ const HlsSyncPlayer = forwardRef<VideoSyncPlayerHandle, HlsSyncPlayerProps>(
 
           await reinitializeWithUrl(nextUrl, {
             readyTimeoutMs: RECOVERY_READY_TIMEOUT_MS,
+            startupSource: "recovery_retry",
           });
         });
         if (!didRun) {
@@ -2528,7 +3134,7 @@ const HlsSyncPlayer = forwardRef<VideoSyncPlayerHandle, HlsSyncPlayerProps>(
         ) : showPlayer ? (
           <div className="video-frame video-player-frame hls-player-frame">
             <video
-              ref={videoRef}
+              ref={assignVideoRef}
               data-testid="hls-video"
               className="hls-video-element"
               playsInline

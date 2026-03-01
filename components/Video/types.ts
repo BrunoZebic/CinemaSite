@@ -18,6 +18,17 @@ export type PlaybackStartState =
   | "BLOCKED_AUTOPLAY"
   | "DEGRADED";
 
+export type StartupRunEndedReason =
+  | "progress_reached"
+  | "play_failed"
+  | "handoff_to_recovery"
+  | "aborted_by_supersession"
+  | "aborted_other";
+
+export type StartupAbortCause = `aborted_by_pause_reason:${string}` | "unknown_abort";
+
+export type StartupSuppressedReason = "priming_required" | "already_active_run";
+
 export interface VideoSyncDebugState {
   phase: PremierePhase;
   playerTime: number;
@@ -44,11 +55,34 @@ export interface VideoSyncDebugState {
   pendingReinitReason?: "token_refresh" | "recovery" | null;
   requiresPriming?: boolean;
   isPrimed?: boolean;
+  primedForMountId?: number | null;
   startupAttemptId?: number;
   gestureTapCount?: number;
   lastGestureAtMs?: number | null;
   lastPlayAttempt?: string | null;
   startupCalledFromGesture?: boolean;
+  hlsInstanceId?: number;
+  attachCount?: number;
+  detachCount?: number;
+  srcSetCount?: number;
+  loadCalledCount?: number;
+  videoElementMountId?: number;
+  videoRefAssignedAtMs?: number | null;
+  pauseCount?: number;
+  lastPauseReason?: string | null;
+  overlayTapHandledCount?: number;
+  startupRunStartedCount?: number;
+  startupRunAbortedCount?: number;
+  startupWindowRunId?: number | null;
+  startupWindowStartAtMs?: number | null;
+  startupWindowEndAtMs?: number | null;
+  runEndedReason?: StartupRunEndedReason | null;
+  lastAbortCause?: StartupAbortCause | null;
+  startupSuppressedReason?: StartupSuppressedReason | null;
+  playAttemptRunId?: number | null;
+  playAttemptStartAtMs?: number | null;
+  doubleStartSuspected?: boolean;
+  suppressedThenTappedSuspected?: boolean;
 }
 
 export interface VideoSyncPlayerHandle {
