@@ -56,6 +56,7 @@ export default function IdentityModal({ open, onSave }: IdentityModalProps) {
             <label className="identity-field">
               <span className="identity-label">Nickname</span>
               <input
+                data-testid="identity-nickname-input"
                 className="identity-input"
                 ref={inputRef}
                 value={nickname}
@@ -66,7 +67,11 @@ export default function IdentityModal({ open, onSave }: IdentityModalProps) {
               />
             </label>
             {error ? <p className="identity-error">{error}</p> : null}
-            <button className="identity-submit" type="submit">
+            <button
+              data-testid="identity-submit"
+              className="identity-submit"
+              type="submit"
+            >
               Enter Premiere
             </button>
           </form>

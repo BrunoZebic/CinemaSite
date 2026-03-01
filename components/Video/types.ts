@@ -35,6 +35,9 @@ export interface VideoSyncDebugState {
   playbackStartState?: PlaybackStartState;
   autoplayBlocked?: boolean;
   playIntentActive?: boolean;
+  operationOwner?: "none" | "startup" | "token_refresh" | "recovery";
+  reinitLocked?: boolean;
+  pendingReinitReason?: "token_refresh" | "recovery" | null;
 }
 
 export interface VideoSyncPlayerHandle {

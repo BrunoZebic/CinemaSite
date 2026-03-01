@@ -1,0 +1,184 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>HLS Smoke Harness</title>
+    <script src="/hls.min.js"></script>
+  </head>
+  <body>
+    <video id="hlsVideo" muted playsinline preload="auto"></video>
+
+    <script>
+      const params = new URLSearchParams(window.location.search);
+      const source = params.get("src");
+      const extraAuthKeys = (params.get("auth_keys") || "")
+        .split(",")
+        .map((value) => value.trim().toLowerCase())
+        .filter(Boolean);
+
+      const DEFAULT_AUTH_KEYS = ["token", "bcdn_token", "expires", "token_path"];
+      const ALLOWED_AUTH_KEYS = new Set([...DEFAULT_AUTH_KEYS, ...extraAuthKeys]);
+      const video = document.getElementById("hlsVideo");
+
+      window.__HLS_FATAL__ = null;
+      window.__HLS_METRICS__ = {
+        manifestParsed: false,
+        fragsLoaded: 0,
+        segment2xx: 0,
+        fatalErrors: [],
+        mediaErrors: [],
+      };
+      window.__HLS_STATE__ = {
+        get currentTime() {
+          return video.currentTime || 0;
+        },
+        get readyState() {
+          return video.readyState;
+        },
+        get paused() {
+          return video.paused;
+        },
+      };
+
+      function log(type, msg, extra) {
+        console.log(
+          "[HLS_TEST]",
+          JSON.stringify({
+            type,
+            msg,
+            extra,
+            t: Date.now(),
+          }),
+        );
+      }
+
+      if (!source) {
+        log("fatal", "Missing src query param");
+        throw new Error("Missing src");
+      }
+
+      const manifestUrl = new URL(source, window.location.href);
+      video.muted = true;
+      video.playsInline = true;
+
+      video.addEventListener("error", () => {
+        const payload = {
+          code: video.error ? video.error.code : null,
+          message: video.error ? video.error.message : null,
+        };
+        window.__HLS_METRICS__.mediaErrors.push(payload);
+        log("video_error", "Video element error", payload);
+      });
+
+      if (!window.Hls || !window.Hls.isSupported()) {
+        window.__HLS_FATAL__ = {
+          details: "hls.js is not supported in this browser runtime",
+          fatal: true,
+        };
+        log("fatal", "hls.js is not supported");
+        throw new Error("hls.js not supported");
+      }
+
+      function withAuthParams(urlLike) {
+        let resolved;
+        try {
+          resolved = new URL(urlLike, manifestUrl);
+        } catch {
+          return urlLike;
+        }
+
+        if (
+          resolved.protocol !== manifestUrl.protocol ||
+          resolved.host !== manifestUrl.host
+        ) {
+          return resolved.toString();
+        }
+
+        for (const key of ALLOWED_AUTH_KEYS) {
+          const value = manifestUrl.searchParams.get(key);
+          if (!value) {
+            continue;
+          }
+          if (!resolved.searchParams.has(key)) {
+            resolved.searchParams.set(key, value);
+          }
+        }
+
+        return resolved.toString();
+      }
+
+      const BaseLoader = window.Hls.DefaultConfig.loader;
+      class AuthMergingLoader extends BaseLoader {
+        load(context, config, callbacks) {
+          context.url = withAuthParams(context.url);
+          super.load(context, config, callbacks);
+        }
+      }
+
+      const hls = new window.Hls({
+        enableWorker: true,
+        lowLatencyMode: false,
+        startLevel: 0,
+        loader: AuthMergingLoader,
+      });
+
+      hls.on(window.Hls.Events.MEDIA_ATTACHED, () => {
+        log("media_attached", "OK");
+        hls.loadSource(manifestUrl.toString());
+      });
+
+      hls.on(window.Hls.Events.MANIFEST_PARSED, (_event, data) => {
+        window.__HLS_METRICS__.manifestParsed = true;
+        const levelCount = Array.isArray(data.levels) ? data.levels.length : -1;
+        if (levelCount > 0) {
+          hls.currentLevel = 0;
+          log("manifest_parsed", "OK", { levels: levelCount, forcedLevel: 0 });
+          return;
+        }
+
+        log("manifest_parsed", "OK", {
+          levels: levelCount,
+          note: "No levels exposed by parser (media-playlist or unsupported manifest shape).",
+        });
+      });
+
+      hls.on(window.Hls.Events.FRAG_LOADED, (_event, data) => {
+        window.__HLS_METRICS__.fragsLoaded += 1;
+        window.__HLS_METRICS__.segment2xx += 1;
+        log("frag_loaded", "OK", {
+          sn: data && data.frag ? data.frag.sn : null,
+          type: data && data.frag ? data.frag.type : null,
+        });
+      });
+
+      hls.on(window.Hls.Events.ERROR, (_event, data) => {
+        const payload = {
+          type: data ? data.type : null,
+          details: data ? data.details : null,
+          fatal: Boolean(data && data.fatal),
+          reason: data ? data.reason : null,
+          url: data ? data.url : null,
+        };
+        window.__HLS_METRICS__.fatalErrors.push(payload);
+        log("hls_error", `${payload.type || "unknown"}:${payload.details || "unknown"}`, payload);
+        if (payload.fatal) {
+          window.__HLS_FATAL__ = payload;
+        }
+      });
+
+      hls.attachMedia(video);
+
+      (async () => {
+        try {
+          await video.play();
+          log("play_called", "OK");
+        } catch (error) {
+          log("play_called", "FAILED", {
+            message: String(error && error.message ? error.message : error),
+          });
+        }
+      })();
+    </script>
+  </body>
+</html>

@@ -15,7 +15,7 @@ This build implements:
 
 1. Install dependencies:
 ```bash
-npm install
+pnpm install
 ```
 
 2. Configure environment:
@@ -68,7 +68,7 @@ Manifest hardening notes:
 
 5. Start development server:
 ```bash
-npm run dev
+pnpm dev
 ```
 
 6. Open:
@@ -86,10 +86,48 @@ http://localhost:3000/premiere/demo
 - `POST /api/rooms/[room]/host-actions`
 
 ## Scripts
-- `npm run dev`
-- `npm run lint`
-- `npm run build`
-- `npm run start`
+- `pnpm dev`
+- `pnpm lint`
+- `pnpm build`
+- `pnpm start`
+- `pnpm test:hls:url -- --url "<manifest-url>"`
+- `pnpm test:hls:bunny -- --room demo`
+- `pnpm test:hls:guard -- --url "<signed-manifest-url>"`
+- `pnpm test:hls:room -- --base-url http://localhost:3100 --room demo --invite-code "<code>"`
+
+## Week 4 HLS Self-Test Harness
+
+Install Playwright Chromium once:
+```bash
+pnpm playwright:install
+```
+
+Smoke modes:
+```bash
+# direct URL smoke
+pnpm test:hls:url -- --url "https://.../master.m3u8"
+
+# Bunny room smoke (auto signs URL from DB + strict token guard)
+pnpm test:hls:bunny -- --room demo
+```
+
+PowerShell note: quote full URLs in single quotes to keep `&` query params intact.
+
+Optional full room E2E:
+```bash
+pnpm test:hls:room -- --base-url http://localhost:3100 --room demo --invite-code "..."
+```
+
+Behavior highlights:
+- smoke server binds to `127.0.0.1` and browser origin is always `http://localhost:4173` (or `HLS_SMOKE_PORT`)
+- strict token guard fails if unsigned URLs are public (`2xx`) or redirect (`3xx`)
+- retry is one time only and only for timeout/network/5xx classes in Bunny smoke mode
+- all test diagnostics redact auth query params (`token`, `bcdn_token`, `expires`, `token_path`)
+
+Recommended Bunny CORS dev snippet:
+- allow origin: `http://localhost:4173`
+- allow methods: `GET, HEAD, OPTIONS`
+- allow request headers: `Range`
 
 ## Rehearsal Debug Overlay
 

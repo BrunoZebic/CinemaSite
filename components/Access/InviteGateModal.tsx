@@ -73,6 +73,7 @@ export default function InviteGateModal({
             <label className="identity-field">
               <span className="identity-label">Invite Code</span>
               <input
+                data-testid="invite-code-input"
                 className="identity-input"
                 value={inviteCode}
                 onChange={(event) => setInviteCode(event.target.value)}
@@ -81,7 +82,12 @@ export default function InviteGateModal({
               />
             </label>
             {error ? <p className="identity-error">{error}</p> : null}
-            <button className="identity-submit" type="submit" disabled={submitting}>
+            <button
+              data-testid="invite-submit"
+              className="identity-submit"
+              type="submit"
+              disabled={submitting}
+            >
               {submitting ? "Validating..." : "Enter Room"}
             </button>
           </form>
