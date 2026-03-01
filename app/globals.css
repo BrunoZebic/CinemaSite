@@ -303,7 +303,136 @@ a {
   color: var(--text-muted);
 }
 
-.video-prime-overlay {
+.video-gesture-overlay {
+  --gesture-size: 64px;
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  background: rgba(0, 0, 0, 0.62);
+  z-index: 10;
+  opacity: 1;
+  transition: opacity 220ms ease, background 220ms ease;
+}
+
+.video-gesture-overlay.is-accepting {
+  background: rgba(0, 0, 0, 0.5);
+}
+
+.video-gesture-overlay.is-exiting {
+  opacity: 0;
+  pointer-events: none;
+}
+
+.video-gesture-cta {
+  position: relative;
+  width: var(--gesture-size);
+  height: var(--gesture-size);
+  border-radius: 999px;
+  border: 1px solid rgba(242, 189, 88, 0.55);
+  background: radial-gradient(
+    circle at 35% 30%,
+    rgba(255, 255, 255, 0.2),
+    rgba(242, 189, 88, 0.15) 45%,
+    rgba(10, 14, 22, 0.95) 100%
+  );
+  color: #f7f4ef;
+  cursor: pointer;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  transition: transform 140ms ease, border-color 140ms ease, box-shadow 140ms ease;
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.08), 0 12px 28px rgba(3, 6, 12, 0.45);
+}
+
+.video-gesture-rings {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+.video-gesture-ring {
+  position: absolute;
+  inset: 0;
+  width: var(--gesture-size);
+  height: var(--gesture-size);
+  margin: auto;
+  border-radius: 999px;
+  border: 1px solid rgba(242, 189, 88, 0.32);
+  box-shadow: 0 0 12px rgba(242, 189, 88, 0.16);
+  opacity: 0;
+  transform: scale(1);
+  animation: projector-ring-pulse 2.8s ease-out infinite;
+}
+
+.video-gesture-ring:nth-child(2) {
+  animation-delay: 900ms;
+}
+
+.video-gesture-ring:nth-child(3) {
+  animation-delay: 1800ms;
+}
+
+.video-gesture-icon {
+  width: 24px;
+  height: 24px;
+  transform: translateX(1px);
+  transition: transform 120ms ease;
+}
+
+.video-gesture-cta:hover,
+.video-gesture-cta:focus-visible {
+  border-color: rgba(242, 189, 88, 0.82);
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.14), 0 16px 34px rgba(3, 6, 12, 0.5);
+  outline: none;
+}
+
+.video-gesture-cta:hover .video-gesture-icon,
+.video-gesture-cta:focus-visible .video-gesture-icon {
+  transform: translateX(1px) scale(1.03);
+}
+
+.video-gesture-cta:hover .video-gesture-ring,
+.video-gesture-cta:focus-visible .video-gesture-ring {
+  border-color: rgba(242, 189, 88, 0.45);
+}
+
+.video-gesture-overlay.is-accepting .video-gesture-ring,
+.video-gesture-overlay.is-exiting .video-gesture-ring {
+  animation-play-state: paused;
+  opacity: 0;
+  transform: scale(1.8);
+}
+
+.video-waiting-lobby {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  align-content: center;
+  gap: 0.28rem;
+  background: linear-gradient(180deg, rgba(2, 4, 8, 0.36), rgba(2, 4, 8, 0.7));
+  z-index: 9;
+  text-align: center;
+  pointer-events: none;
+}
+
+.video-waiting-title {
+  margin: 0;
+  color: #f7f4ef;
+  font-size: 1.02rem;
+  letter-spacing: 0.03em;
+}
+
+.video-waiting-copy {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 0.82rem;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+}
+
+.video-recovery-overlay {
   position: absolute;
   inset: 0;
   display: grid;
@@ -311,15 +440,15 @@ a {
   gap: 0.65rem;
   align-content: center;
   background: linear-gradient(180deg, rgba(0, 0, 0, 0.25), rgba(0, 0, 0, 0.72));
-  z-index: 9;
+  z-index: 11;
 }
 
-.video-prime-overlay p {
+.video-recovery-overlay p {
   margin: 0;
   letter-spacing: 0.03em;
 }
 
-.video-prime-overlay button {
+.video-recovery-overlay button {
   border: 1px solid rgba(124, 216, 200, 0.55);
   border-radius: 999px;
   background: rgba(124, 216, 200, 0.2);
@@ -328,6 +457,35 @@ a {
   font-weight: 700;
   cursor: pointer;
   padding: 0.45rem 0.95rem;
+}
+
+@keyframes projector-ring-pulse {
+  0% {
+    opacity: 0.14;
+    transform: scale(1);
+  }
+  52% {
+    opacity: 0.06;
+    transform: scale(1.35);
+  }
+  100% {
+    opacity: 0;
+    transform: scale(1.6);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .video-gesture-overlay,
+  .video-gesture-cta,
+  .video-gesture-icon {
+    transition: none;
+  }
+
+  .video-gesture-ring {
+    animation: none;
+    opacity: 0.09;
+    transform: scale(1.12);
+  }
 }
 
 .video-blackout {
@@ -864,6 +1022,10 @@ a {
     right: 0.45rem;
     bottom: 0.45rem;
     gap: 0.35rem;
+  }
+
+  .video-gesture-overlay {
+    --gesture-size: 72px;
   }
 
   .message-action-icon {

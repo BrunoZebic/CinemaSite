@@ -41,6 +41,8 @@ const SEEK_SETTLE_EPSILON_SEC = 0.35;
 const SHORT_PROGRESS_CHECK_MS = 2500;
 const SHORT_PROGRESS_DELTA_MIN_SEC = 0.1;
 const LIVE_PAUSE_RESUME_COOLDOWN_MS = 2000;
+const GESTURE_OVERLAY_ACCEPT_MS = 80;
+const GESTURE_OVERLAY_EXIT_MS = 240;
 
 type HlsSyncPlayerProps = {
   room: string;
@@ -61,6 +63,8 @@ type HlsSyncPlayerProps = {
 type SyncOptions = {
   forceHardSeek?: boolean;
 };
+
+type GestureOverlayPhase = "idle" | "accepting" | "exiting";
 
 function getPrimingKey(room: string): string {
   return `playPrimed:${room}`;
@@ -180,6 +184,9 @@ const HlsSyncPlayer = forwardRef<VideoSyncPlayerHandle, HlsSyncPlayerProps>(
     const activeStartupAttemptRef = useRef(0);
     const startupPlayingSinceRef = useRef<number | null>(null);
     const shortProgressCheckTimerRef = useRef<number | null>(null);
+    const gestureOverlayAcceptTimerRef = useRef<number | null>(null);
+    const gestureOverlayExitTimerRef = useRef<number | null>(null);
+    const gestureTapInFlightRef = useRef(false);
     const livePauseResumeTimerRef = useRef<number | null>(null);
     const livePauseCooldownUntilRef = useRef(0);
     const authRecoveryAttemptsRef = useRef<number[]>([]);
@@ -225,6 +232,9 @@ const HlsSyncPlayer = forwardRef<VideoSyncPlayerHandle, HlsSyncPlayerProps>(
     const [autoplayBlocked, setAutoplayBlocked] = useState(false);
     const [lastErrorClass, setLastErrorClass] =
       useState<HlsRecoveryErrorClass | null>(null);
+    const [isGestureOverlayMounted, setIsGestureOverlayMounted] = useState(false);
+    const [gestureOverlayPhase, setGestureOverlayPhase] =
+      useState<GestureOverlayPhase>("idle");
     const driftDebugRef = useRef(driftDebug);
     const readyStateRef = useRef(readyState);
 
@@ -315,6 +325,38 @@ const HlsSyncPlayer = forwardRef<VideoSyncPlayerHandle, HlsSyncPlayerProps>(
         shortProgressCheckTimerRef.current = null;
       }
     }, []);
+
+    const clearGestureOverlayTimers = useCallback(() => {
+      if (gestureOverlayAcceptTimerRef.current) {
+        window.clearTimeout(gestureOverlayAcceptTimerRef.current);
+        gestureOverlayAcceptTimerRef.current = null;
+      }
+      if (gestureOverlayExitTimerRef.current) {
+        window.clearTimeout(gestureOverlayExitTimerRef.current);
+        gestureOverlayExitTimerRef.current = null;
+      }
+    }, []);
+
+    const hideGestureOverlayImmediately = useCallback(() => {
+      clearGestureOverlayTimers();
+      setIsGestureOverlayMounted(false);
+      setGestureOverlayPhase("idle");
+    }, [clearGestureOverlayTimers]);
+
+    const beginGestureOverlayDismissal = useCallback(() => {
+      clearGestureOverlayTimers();
+      setIsGestureOverlayMounted(true);
+      setGestureOverlayPhase("accepting");
+      gestureOverlayAcceptTimerRef.current = window.setTimeout(() => {
+        setGestureOverlayPhase("exiting");
+        gestureOverlayExitTimerRef.current = window.setTimeout(() => {
+          setIsGestureOverlayMounted(false);
+          setGestureOverlayPhase("idle");
+          gestureOverlayExitTimerRef.current = null;
+        }, GESTURE_OVERLAY_EXIT_MS);
+        gestureOverlayAcceptTimerRef.current = null;
+      }, GESTURE_OVERLAY_ACCEPT_MS);
+    }, [clearGestureOverlayTimers]);
 
     const beginStartupAttempt = useCallback(() => {
       const nextAttempt = startupAttemptIdRef.current + 1;
@@ -1591,11 +1633,31 @@ const HlsSyncPlayer = forwardRef<VideoSyncPlayerHandle, HlsSyncPlayerProps>(
         setStatusText("Player is not ready for playback.");
         return;
       }
+      if (gestureTapInFlightRef.current) {
+        return;
+      }
+      gestureTapInFlightRef.current = true;
 
       video.muted = true;
       setIsMuted(true);
 
-      const playPromise = video.play();
+      let playPromise: Promise<void>;
+      try {
+        playPromise = video.play();
+      } catch (error) {
+        gestureTapInFlightRef.current = false;
+        if (isAutoplayBlockedError(error)) {
+          setAutoplayBlockedState(true);
+          playIntentRef.current = false;
+          updatePlaybackStartState(
+            requiresPriming ? "PRIMING_REQUIRED" : "BLOCKED_AUTOPLAY",
+          );
+          stopDriftLoop();
+          return;
+        }
+        setStatusIfChanged("Playback start failed. Tap again.");
+        return;
+      }
       const attemptId = beginStartupAttempt();
       activeStartupAttemptRef.current = attemptId;
       playIntentRef.current = true;
@@ -1610,19 +1672,28 @@ const HlsSyncPlayer = forwardRef<VideoSyncPlayerHandle, HlsSyncPlayerProps>(
           }
 
           setPrimed(true);
+
+          if (phaseRef.current === "WAITING") {
+            playIntentRef.current = false;
+            bufferingRef.current = false;
+            setBuffering(false);
+            clearShortProgressCheck();
+            updatePlaybackStartState("IDLE", {
+              keepStatus: true,
+            });
+            setStatusIfChanged("Playback primed. Waiting for start.");
+            window.requestAnimationFrame(() => {
+              void video.pause();
+            });
+            beginGestureOverlayDismissal();
+            return;
+          }
+
           updatePlaybackStartState("PLAYING");
           startupPlayingSinceRef.current = Date.now();
           const playerNow = await adapter.getCurrentTime();
           scheduleShortProgressCheck(attemptId, playerNow);
-
-          if (phaseRef.current === "WAITING") {
-            window.setTimeout(() => {
-              void adapter.pause();
-            }, 150);
-            setStatusIfChanged("Playback primed. Ready for LIVE start.");
-            return;
-          }
-
+          beginGestureOverlayDismissal();
           await syncToCanonicalTime({
             forceHardSeek: true,
           });
@@ -1638,10 +1709,13 @@ const HlsSyncPlayer = forwardRef<VideoSyncPlayerHandle, HlsSyncPlayerProps>(
             return;
           }
           setStatusIfChanged("Playback start failed. Tap again.");
+        } finally {
+          gestureTapInFlightRef.current = false;
         }
       })();
     }, [
       beginStartupAttempt,
+      beginGestureOverlayDismissal,
       clearShortProgressCheck,
       isStartupAttemptActive,
       requiresPriming,
@@ -1769,25 +1843,87 @@ const HlsSyncPlayer = forwardRef<VideoSyncPlayerHandle, HlsSyncPlayerProps>(
       phase !== "DISCUSSION" &&
       phase !== "CLOSED" &&
       !playbackConfigError;
-
-    const shouldShowPrimingOverlay =
+    const isPrimingNeeded = requiresPriming && !isPrimed;
+    const isGestureRequired =
       showPlayer &&
       phase !== "SILENCE" &&
-      (playbackStartState === "PRIMING_REQUIRED" ||
-        (requiresPriming &&
-          !isPrimed &&
-          (phase === "WAITING" || phase === "LIVE")));
-    const shouldShowBlockedAutoplayOverlay =
-      showPlayer && playbackStartState === "BLOCKED_AUTOPLAY";
+      (playbackStartState === "BLOCKED_AUTOPLAY" ||
+        (isPrimingNeeded && (phase === "WAITING" || phase === "LIVE")));
     const scrubEnabled =
       rehearsalScrubEnabled && phase !== "LIVE" && phase !== "SILENCE" && showPlayer;
-    const showRecoveryOverlay = showPlayer && recoveryState === "DEGRADED";
-    const showPlaybackStartOverlay =
-      shouldShowPrimingOverlay || shouldShowBlockedAutoplayOverlay;
-    const playbackStartOverlayLabel =
-      playbackStartState === "BLOCKED_AUTOPLAY" ? "Tap to play" : "Tap to enable playback";
-    const playbackStartOverlayButton =
-      playbackStartState === "BLOCKED_AUTOPLAY" ? "Play" : "Enable Playback";
+    const showSilenceBlackout = showPlayer && phase === "SILENCE";
+    const showRecoveryOverlay =
+      showPlayer && !showSilenceBlackout && recoveryState === "DEGRADED";
+    const showGestureOverlay =
+      showPlayer &&
+      !showSilenceBlackout &&
+      !showRecoveryOverlay &&
+      (isGestureRequired || isGestureOverlayMounted);
+    const showWaitingLobbyOverlay =
+      showPlayer &&
+      !showSilenceBlackout &&
+      !showRecoveryOverlay &&
+      phase === "WAITING" &&
+      !isGestureRequired;
+
+    useEffect(() => {
+      if (!showPlayer || recoveryState === "DEGRADED") {
+        return;
+      }
+      if (phase !== "WAITING" && phase !== "LIVE") {
+        return;
+      }
+      if (!isPrimingNeeded) {
+        return;
+      }
+      if (
+        playbackStartState === "BLOCKED_AUTOPLAY" ||
+        playbackStartState === "PRIMING_REQUIRED"
+      ) {
+        return;
+      }
+      updatePlaybackStartState("PRIMING_REQUIRED");
+    }, [
+      isPrimingNeeded,
+      phase,
+      playbackStartState,
+      recoveryState,
+      showPlayer,
+      updatePlaybackStartState,
+    ]);
+
+    useEffect(() => {
+      if (showSilenceBlackout || !showPlayer) {
+        hideGestureOverlayImmediately();
+        return;
+      }
+
+      if (isGestureRequired) {
+        clearGestureOverlayTimers();
+        setIsGestureOverlayMounted(true);
+        setGestureOverlayPhase("idle");
+        return;
+      }
+
+      if (gestureOverlayPhase === "accepting" || gestureOverlayPhase === "exiting") {
+        return;
+      }
+
+      hideGestureOverlayImmediately();
+    }, [
+      clearGestureOverlayTimers,
+      gestureOverlayPhase,
+      hideGestureOverlayImmediately,
+      isGestureRequired,
+      showPlayer,
+      showSilenceBlackout,
+    ]);
+
+    useEffect(() => {
+      return () => {
+        clearGestureOverlayTimers();
+      };
+    }, [clearGestureOverlayTimers]);
 
     return (
       <div className="video-shell">
@@ -1812,21 +1948,50 @@ const HlsSyncPlayer = forwardRef<VideoSyncPlayerHandle, HlsSyncPlayerProps>(
               playsInline
               preload="auto"
             />
-            {phase === "SILENCE" ? (
+            {showSilenceBlackout ? (
               <div className="video-blackout">
                 <p>Silence</p>
               </div>
             ) : null}
-            {showPlaybackStartOverlay ? (
-              <div className="video-prime-overlay">
-                <p>{playbackStartOverlayLabel}</p>
-                <button type="button" onClick={handleOverlayPlaybackTap}>
-                  {playbackStartOverlayButton}
+            {showGestureOverlay ? (
+              <div
+                className={`video-gesture-overlay ${
+                  gestureOverlayPhase !== "idle"
+                    ? `is-${gestureOverlayPhase}`
+                    : ""
+                }`.trim()}
+              >
+                <button
+                  type="button"
+                  className="video-gesture-cta"
+                  onClick={handleOverlayPlaybackTap}
+                  aria-label="Play"
+                  title="Play"
+                >
+                  <span className="video-gesture-rings" aria-hidden>
+                    <span className="video-gesture-ring" />
+                    <span className="video-gesture-ring" />
+                    <span className="video-gesture-ring" />
+                  </span>
+                  <svg
+                    className="video-gesture-icon"
+                    viewBox="0 0 20 20"
+                    aria-hidden="true"
+                    focusable="false"
+                  >
+                    <path d="M7 5.2L15 10L7 14.8V5.2Z" fill="currentColor" />
+                  </svg>
                 </button>
               </div>
             ) : null}
+            {showWaitingLobbyOverlay ? (
+              <div className="video-waiting-lobby">
+                <p className="video-waiting-title">Waiting...</p>
+                <p className="video-waiting-copy">Starts soon</p>
+              </div>
+            ) : null}
             {showRecoveryOverlay ? (
-              <div className="video-prime-overlay">
+              <div className="video-recovery-overlay">
                 <p>Playback issue - Retry</p>
                 <button type="button" onClick={() => void handleManualRecoveryRetry()}>
                   Retry Playback
