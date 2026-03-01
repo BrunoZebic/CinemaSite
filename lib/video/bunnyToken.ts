@@ -114,15 +114,14 @@ function ensureDirectoryTokenPath(manifestPath: string): string {
     return "/";
   }
 
-  const directory = manifestPath.slice(0, lastSlashIndex + 1);
-  return directory.startsWith("/") ? directory : `/${directory}`;
-}
-
-function joinSignedUrl(cdnBaseUrl: string, manifestPath: string): URL {
-  const baseUrl = cdnBaseUrl.endsWith("/")
-    ? cdnBaseUrl
-    : `${cdnBaseUrl}/`;
-  return new URL(manifestPath.slice(1), baseUrl);
+  let directory = manifestPath.slice(0, lastSlashIndex + 1);
+  if (!directory.startsWith("/")) {
+    directory = `/${directory}`;
+  }
+  if (!directory.endsWith("/")) {
+    directory = `${directory}/`;
+  }
+  return normalizePathSlashes(directory);
 }
 
 type SignManifestInput = {
@@ -145,16 +144,13 @@ export function createSignedBunnyManifestUrl({
     throw new Error(validated.error);
   }
 
+  const base = cdnBaseUrl.replace(/\/+$/, "");
   const expires = Math.floor(nowUnixMs / 1000) + Math.max(60, expiresInSeconds);
   const tokenPath = ensureDirectoryTokenPath(validated.manifestPath);
-  const baseManifestUrl = joinSignedUrl(cdnBaseUrl, validated.manifestPath);
-  const canonicalPath = baseManifestUrl.pathname;
   const signedParameters = `token_path=${tokenPath}`;
-  const signatureInput = `${tokenKey}${canonicalPath}${expires}${signedParameters}`;
+  const signatureInput = `${tokenKey}${tokenPath}${expires}${signedParameters}`;
   const token = toBase64UrlSha256(signatureInput);
+  const tokenPathEncoded = encodeURIComponent(tokenPath);
 
-  baseManifestUrl.searchParams.set("token", token);
-  baseManifestUrl.searchParams.set("expires", String(expires));
-  baseManifestUrl.searchParams.set("token_path", tokenPath);
-  return baseManifestUrl.toString();
+  return `${base}/bcdn_token=${token}&expires=${expires}&token_path=${tokenPathEncoded}${validated.manifestPath}`;
 }
