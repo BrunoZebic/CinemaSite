@@ -882,13 +882,14 @@ a {
 }
 
 @media (min-width: 901px) {
-  .chat-panel {
-    height: clamp(320px, 40vh, 520px);
-  }
-
   .chat-drawer {
     position: static;
     transform: none;
+    height: 100%;
+  }
+
+  .chat-panel {
+    height: 100%;
   }
 
   .chat-toggle,
