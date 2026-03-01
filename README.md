@@ -13,6 +13,8 @@ This build implements:
 
 ## Setup
 
+0. Use Node.js `>=20.9.0`.
+
 1. Install dependencies:
 ```bash
 pnpm install
@@ -89,6 +91,7 @@ http://localhost:3000/premiere/demo
 - `pnpm dev`
 - `pnpm lint`
 - `pnpm build`
+- `pnpm test:hls:unit`
 - `pnpm start`
 - `pnpm test:hls:url -- --url "<manifest-url>"`
 - `pnpm test:hls:bunny -- --room demo`
@@ -120,12 +123,15 @@ pnpm test:hls:room -- --base-url http://localhost:3100 --room demo --invite-code
 
 Behavior highlights:
 - smoke server binds to `127.0.0.1` and browser origin is always `http://localhost:4173` (or `HLS_SMOKE_PORT`)
+- room E2E canonical origin is `http://localhost:3100` (or `HLS_TEST_BASE_URL`)
 - strict token guard fails if unsigned URLs are public (`2xx`) or redirect (`3xx`)
 - retry is one time only and only for timeout/network/5xx classes in Bunny smoke mode
 - all test diagnostics redact auth query params (`token`, `bcdn_token`, `expires`, `token_path`)
+- full suite requires Bunny CORS to allow both `http://localhost:4173` and `http://localhost:3100`
+- if room Chromium E2E fails with `MEDIA_ERR_SRC_NOT_SUPPORTED` and video source points to `.m3u8`, treat it as engine-selection/native-path regression before CORS triage
 
 Recommended Bunny CORS dev snippet:
-- allow origin: `http://localhost:4173`
+- allow origins: `http://localhost:4173`, `http://localhost:3100`
 - allow methods: `GET, HEAD, OPTIONS`
 - allow request headers: `Range`
 

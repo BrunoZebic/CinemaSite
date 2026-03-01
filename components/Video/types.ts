@@ -1,4 +1,5 @@
 import type { PremierePhase } from "@/lib/premiere/types";
+import type { HlsPlaybackEngine } from "@/lib/video/hlsEngineSelection";
 
 export type HlsRecoveryState = "IDLE" | "RECOVERING" | "DEGRADED";
 
@@ -35,6 +36,9 @@ export interface VideoSyncDebugState {
   playbackStartState?: PlaybackStartState;
   autoplayBlocked?: boolean;
   playIntentActive?: boolean;
+  playbackEngine?: HlsPlaybackEngine;
+  manifestParsed?: boolean;
+  nativeMetadataLoaded?: boolean;
   operationOwner?: "none" | "startup" | "token_refresh" | "recovery";
   reinitLocked?: boolean;
   pendingReinitReason?: "token_refresh" | "recovery" | null;

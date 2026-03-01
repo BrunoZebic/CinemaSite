@@ -1,8 +1,10 @@
-import { expect, test, type Page } from "@playwright/test";
+import { expect, test, type Page, type TestInfo } from "@playwright/test";
 import { loadLocalEnv } from "../../scripts/hls/env";
+import { buildAuthKeySet, redactUnknown } from "../../scripts/hls/redact";
 
 loadLocalEnv();
 
+const AUTH_KEYS = buildAuthKeySet(process.env.HLS_AUTH_KEYS_EXTRA ?? null);
 const ROOM =
   process.env.HLS_TEST_ROOM?.trim() ?? process.env.HLS_E2E_ROOM?.trim() ?? "demo";
 const BASE_URL =
@@ -21,9 +23,106 @@ const STARTUP_PRE_GATE_TIMEOUT_MS = Number(
 const PRIMARY_PROGRESS_DELTA_MIN_SEC = 4;
 const SECONDARY_PROGRESS_DELTA_MIN_SEC = 5;
 const WAITING_STALLED_SOFT_LIMIT = 2;
+const MANIFEST_SOURCE_PATTERN = /\.m3u8(?:$|[?#])/i;
+
+type RuntimeProbeState = {
+  playbackEngine?: string;
+  manifestParsed?: boolean;
+  nativeMetadataLoaded?: boolean;
+  readinessStage?: string;
+  readyState?: number;
+  buffering?: boolean;
+  recoveryState?: string;
+  playbackStartState?: string;
+};
+
+type VideoDiagnostics = {
+  currentSrc: string;
+  srcAttr: string | null;
+  readyState: number;
+  networkState: number;
+  currentTime: number;
+  paused: boolean;
+  error: { code: number } | null;
+  probe: RuntimeProbeState | null;
+};
 
 function roomUrl(): string {
   return `${BASE_URL.replace(/\/+$/, "")}/premiere/${encodeURIComponent(ROOM)}`;
+}
+
+function hasManifestSource(value: string | null | undefined): boolean {
+  if (!value) {
+    return false;
+  }
+  return MANIFEST_SOURCE_PATTERN.test(value);
+}
+
+async function readVideoDiagnostics(page: Page): Promise<VideoDiagnostics> {
+  return page.evaluate(() => {
+    const media = document.querySelector(
+      '[data-testid="hls-video"]',
+    ) as HTMLVideoElement | null;
+
+    const probe = (window as unknown as { __HLS_E2E_PROBE__?: RuntimeProbeState })
+      .__HLS_E2E_PROBE__;
+
+    if (!media) {
+      return {
+        currentSrc: "",
+        srcAttr: null,
+        readyState: 0,
+        networkState: 0,
+        currentTime: 0,
+        paused: true,
+        error: null,
+        probe: probe ?? null,
+      };
+    }
+
+    return {
+      currentSrc: media.currentSrc,
+      srcAttr: media.getAttribute("src"),
+      readyState: media.readyState,
+      networkState: media.networkState,
+      currentTime: media.currentTime,
+      paused: media.paused,
+      error: media.error ? { code: media.error.code } : null,
+      probe: probe ?? null,
+    };
+  });
+}
+
+async function attachDiagnostics(
+  page: Page,
+  testInfo: TestInfo,
+  stage: string,
+  reason: string,
+): Promise<void> {
+  const diagnostics = await readVideoDiagnostics(page).catch(() => ({
+    currentSrc: "",
+    srcAttr: null,
+    readyState: 0,
+    networkState: 0,
+    currentTime: 0,
+    paused: true,
+    error: null,
+    probe: null,
+  }));
+
+  const safePayload = redactUnknown(
+    {
+      stage,
+      reason,
+      diagnostics,
+    },
+    AUTH_KEYS,
+  );
+
+  await testInfo.attach(`room-${stage}-diagnostics`, {
+    body: JSON.stringify(safePayload, null, 2),
+    contentType: "application/json",
+  });
 }
 
 async function completeInviteFlow(page: Page): Promise<void> {
@@ -80,52 +179,140 @@ async function clickGestureIfVisible(page: Page): Promise<void> {
     : new Error("Unable to click gesture CTA.");
 }
 
-async function waitForPlaybackProgress(page: Page): Promise<void> {
+async function waitForPlaybackProgress(
+  page: Page,
+  testInfo: TestInfo,
+  stage: string,
+): Promise<void> {
   const video = page.getByTestId("hls-video");
   await expect(video).toBeVisible({
     timeout: 45_000,
   });
-  await expect
-    .poll(
-      async () =>
-        video.evaluate(
-          (element) => (element as HTMLVideoElement).currentTime || 0,
-        ),
-      {
-        timeout: 45_000,
-        intervals: [500, 1_000, 2_000],
-      },
-    )
-    .toBeGreaterThan(1);
+
+  try {
+    await expect
+      .poll(
+        async () =>
+          video.evaluate(
+            (element) => (element as HTMLVideoElement).currentTime || 0,
+          ),
+        {
+          timeout: 45_000,
+          intervals: [500, 1_000, 2_000],
+        },
+      )
+      .toBeGreaterThan(1);
+  } catch (error) {
+    await attachDiagnostics(
+      page,
+      testInfo,
+      stage,
+      "Playback progress gate timed out (expected currentTime > 1).",
+    );
+    throw error;
+  }
 }
 
-async function assertPlaybackNotStuck(page: Page): Promise<void> {
-  const video = page.getByTestId("hls-video");
-  await expect(video).toBeVisible({
-    timeout: 45_000,
-  });
+async function assertChromiumEnginePath(
+  page: Page,
+  browserName: string,
+  testInfo: TestInfo,
+): Promise<void> {
+  if (browserName !== "chromium") {
+    return;
+  }
 
-  await expect
-    .poll(
-      async () => {
-        const state = await video.evaluate((element) => ({
-          readyState: (element as HTMLVideoElement).readyState ?? 0,
-          currentTime: (element as HTMLVideoElement).currentTime ?? 0,
-        }));
-        return state.readyState >= 2 || state.currentTime > 0.2;
-      },
-      {
-        timeout: STARTUP_PRE_GATE_TIMEOUT_MS,
-        intervals: [250, 500, 1_000],
-        message:
-          "Startup stuck: expected readyState>=2 or currentTime>0.2 after gesture.",
-      },
-    )
-    .toBe(true);
+  const firstSnapshot = await readVideoDiagnostics(page);
+  if (
+    hasManifestSource(firstSnapshot.currentSrc) ||
+    hasManifestSource(firstSnapshot.srcAttr)
+  ) {
+    await attachDiagnostics(
+      page,
+      testInfo,
+      "engine_path",
+      "Detected native HLS path on Chromium; expected hls.js attachment.",
+    );
+    throw new Error(
+      "Detected native HLS path on Chromium; expected hls.js attachment.",
+    );
+  }
+
+  try {
+    await expect
+      .poll(
+        async () => {
+          const snapshot = await readVideoDiagnostics(page);
+          const hasNativePath =
+            hasManifestSource(snapshot.currentSrc) ||
+            hasManifestSource(snapshot.srcAttr);
+          const hasBlobPath = snapshot.currentSrc.startsWith("blob:");
+          const probeConfirmsHlsJs =
+            snapshot.probe?.playbackEngine === "hls.js" &&
+            snapshot.probe?.manifestParsed === true;
+
+          return !hasNativePath && (hasBlobPath || probeConfirmsHlsJs);
+        },
+        {
+          timeout: STARTUP_PRE_GATE_TIMEOUT_MS,
+          intervals: [250, 500, 1_000],
+          message:
+            "Chromium engine guard failed: expected hls.js path (blob currentSrc or probe manifestParsed=true) and no native .m3u8 source.",
+        },
+      )
+      .toBe(true);
+  } catch (error) {
+    await attachDiagnostics(
+      page,
+      testInfo,
+      "engine_path",
+      "Chromium engine path guard did not observe hls.js attachment in time.",
+    );
+    throw error;
+  }
+}
+
+async function assertPlaybackNotStuck(
+  page: Page,
+  testInfo: TestInfo,
+): Promise<void> {
+  const video = page.getByTestId("hls-video");
+  await expect(video).toBeVisible({ timeout: 45_000 });
+
+  try {
+    await expect
+      .poll(
+        async () => {
+          const state = await video.evaluate((element) => ({
+            readyState: (element as HTMLVideoElement).readyState ?? 0,
+            currentTime: (element as HTMLVideoElement).currentTime ?? 0,
+          }));
+          return state.readyState >= 2 || state.currentTime > 0.2;
+        },
+        {
+          timeout: STARTUP_PRE_GATE_TIMEOUT_MS,
+          intervals: [250, 500, 1_000],
+          message:
+            "Startup stuck: expected readyState>=2 or currentTime>0.2 after gesture.",
+        },
+      )
+      .toBe(true);
+  } catch (error) {
+    await attachDiagnostics(
+      page,
+      testInfo,
+      "startup_not_stuck",
+      "Startup readiness pre-gate timed out.",
+    );
+    throw error;
+  }
 }
 
 async function skipIfRoomNotPlayable(page: Page): Promise<void> {
-  const isClosed = await page.getByText("Screening has closed.").isVisible().catch(() => false);
+  const isClosed = await page
+    .getByText("Screening has closed.")
+    .isVisible()
+    .catch(() => false);
   const isDiscussion = await page
     .getByText("Discussion phase is open.")
     .isVisible()
@@ -144,7 +331,10 @@ test.beforeEach(async ({ context }) => {
 test.describe("Room Playback", () => {
   test.skip(!INVITE_CODE, "Missing HLS_TEST_INVITE_CODE.");
 
-  test("room playback reaches advancing video time", async ({ page }) => {
+  test("room playback reaches advancing video time", async (
+    { page, browserName },
+    testInfo,
+  ) => {
     await page.goto(roomUrl(), {
       waitUntil: "domcontentloaded",
     });
@@ -153,20 +343,23 @@ test.describe("Room Playback", () => {
     await skipIfRoomNotPlayable(page);
 
     await clickGestureIfVisible(page);
-    await assertPlaybackNotStuck(page);
-    await waitForPlaybackProgress(page);
+    await assertChromiumEnginePath(page, browserName, testInfo);
+    await assertPlaybackNotStuck(page, testInfo);
+    await waitForPlaybackProgress(page, testInfo, "playback_progress_primary");
   });
 
-  test("cookie bypass reload + delayed gesture start remains stable", async ({
-    page,
-  }) => {
+  test("cookie bypass reload + delayed gesture start remains stable", async (
+    { page, browserName },
+    testInfo,
+  ) => {
     await page.goto(roomUrl(), {
       waitUntil: "domcontentloaded",
     });
     await completeInviteFlow(page);
     await maybeHandleIdentityModal(page);
     await skipIfRoomNotPlayable(page);
-    await waitForPlaybackProgress(page);
+    await assertChromiumEnginePath(page, browserName, testInfo);
+    await waitForPlaybackProgress(page, testInfo, "playback_progress_pre_reload");
 
     await page.reload({
       waitUntil: "domcontentloaded",
@@ -219,8 +412,9 @@ test.describe("Room Playback", () => {
     await page.waitForTimeout(IDLE_DELAY_MS);
 
     await clickGestureIfVisible(page);
-    await assertPlaybackNotStuck(page);
-    await waitForPlaybackProgress(page);
+    await assertChromiumEnginePath(page, browserName, testInfo);
+    await assertPlaybackNotStuck(page, testInfo);
+    await waitForPlaybackProgress(page, testInfo, "playback_progress_post_reload");
 
     const startTime = await video.evaluate(
       (element) => (element as HTMLVideoElement).currentTime || 0,

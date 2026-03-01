@@ -39,6 +39,7 @@ const SMOKE_PORT = Number(process.env.HLS_SMOKE_PORT ?? 4173);
 const AUTH_KEYS = buildAuthKeySet(process.env.HLS_AUTH_KEYS_EXTRA ?? null);
 const MEDIA_EXTENSION_PATTERN = /\.(m3u8|ts|m4s|mp4|key)(\?|$)/i;
 const MEDIA_CONTENT_TYPE_PATTERN = /mpegurl|mp2t|mp4|octet-stream/i;
+const MANIFEST_SOURCE_PATTERN = /\.m3u8(?:$|[?#])/i;
 
 function isMediaRequest(request: Request): boolean {
   const url = request.url();
@@ -85,6 +86,13 @@ function classifyFailure(
   return "unknown";
 }
 
+function hasManifestSource(value: string | null | undefined): boolean {
+  if (!value) {
+    return false;
+  }
+  return MANIFEST_SOURCE_PATTERN.test(value);
+}
+
 async function writeSmokeResult(result: SmokeResultFile): Promise<void> {
   const file = process.env.HLS_SMOKE_RESULT_FILE;
   if (!file) {
@@ -110,7 +118,33 @@ async function readMetrics(page: Page): Promise<HlsBrowserMetrics> {
   });
 }
 
-test("HLS smoke playback advances and loads fragments", async ({ page }) => {
+async function assertNoNativeManifestPathOnChromium(
+  page: Page,
+  browserName: string,
+): Promise<void> {
+  if (browserName !== "chromium") {
+    return;
+  }
+
+  const snapshot = await page.evaluate(() => {
+    const media = document.querySelector("#hlsVideo") as HTMLVideoElement | null;
+    return {
+      currentSrc: media?.currentSrc ?? "",
+      srcAttr: media?.getAttribute("src") ?? null,
+    };
+  });
+
+  if (hasManifestSource(snapshot.currentSrc) || hasManifestSource(snapshot.srcAttr)) {
+    throw new Error(
+      "Detected native HLS path on Chromium in smoke harness; expected hls.js path.",
+    );
+  }
+}
+
+test("HLS smoke playback advances and loads fragments", async ({
+  page,
+  browserName,
+}) => {
   test.setTimeout(90_000);
   const sourceUrl = process.env.HLS_TEST_URL?.trim();
   expect(sourceUrl, "Provide HLS_TEST_URL for smoke playback.").toBeTruthy();
@@ -164,6 +198,7 @@ test("HLS smoke playback advances and loads fragments", async ({ page }) => {
     await page.goto(testUrl, {
       waitUntil: "domcontentloaded",
     });
+    await assertNoNativeManifestPathOnChromium(page, browserName);
 
     await expect
       .poll(
@@ -248,6 +283,7 @@ test("HLS smoke playback advances and loads fragments", async ({ page }) => {
     );
 
     expect(after - before).toBeGreaterThanOrEqual(POST_PROGRESS_DELTA_MIN);
+    await assertNoNativeManifestPathOnChromium(page, browserName);
 
     await writeSmokeResult({
       ok: true,

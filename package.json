@@ -7,6 +7,7 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
+    "test:hls:unit": "tsx --test tests/hls/unit/**/*.test.ts",
     "test:hls:smoke": "playwright test tests/hls/hls-playback.spec.ts --project=hls-smoke",
     "test:hls:url": "tsx scripts/hls/runSmoke.ts",
     "test:hls:bunny": "tsx scripts/hls/runSmoke.ts",
@@ -32,6 +33,9 @@
     "eslint-config-next": "16.1.6",
     "tsx": "^4.20.6",
     "typescript": "^5"
+  },
+  "engines": {
+    "node": ">=20.9.0"
   },
   "packageManager": "pnpm@10.30.3+sha512.c961d1e0a2d8e354ecaa5166b822516668b7f44cb5bd95122d590dd81922f606f5473b6d23ec4a5be05e7fcd18e8488d47d978bbe981872f1145d06e9a740017"
 }

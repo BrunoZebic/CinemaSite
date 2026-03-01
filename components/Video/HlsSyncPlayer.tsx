@@ -22,6 +22,7 @@ import type {
   ScreeningConfig,
 } from "@/lib/premiere/types";
 import { HlsPlaybackAdapter, type HlsFatalError } from "@/lib/video/hlsAdapter";
+import type { HlsPlaybackEngine } from "@/lib/video/hlsEngineSelection";
 
 const LOOP_INTERVAL_MS = 1500;
 const READY_TIMEOUT_MS = 8000;
@@ -47,6 +48,8 @@ const SHORT_PROGRESS_DELTA_MIN_SEC = 0.1;
 const LIVE_PAUSE_RESUME_COOLDOWN_MS = 2000;
 const GESTURE_OVERLAY_ACCEPT_MS = 80;
 const GESTURE_OVERLAY_EXIT_MS = 240;
+const shouldExposeHlsE2EProbe =
+  process.env.NODE_ENV !== "production" || process.env.NEXT_PUBLIC_E2E === "1";
 
 type HlsSyncPlayerProps = {
   room: string;
@@ -71,6 +74,22 @@ type SyncOptions = {
 type GestureOverlayPhase = "idle" | "accepting" | "exiting";
 type OperationOwner = "none" | "startup" | "token_refresh" | "recovery";
 type PendingReinitReason = "token_refresh" | "recovery" | null;
+type HlsE2EProbeState = {
+  playbackEngine: HlsPlaybackEngine;
+  manifestParsed: boolean;
+  nativeMetadataLoaded: boolean;
+  readinessStage: string;
+  readyState: number;
+  buffering: boolean;
+  recoveryState: HlsRecoveryState;
+  playbackStartState: PlaybackStartState;
+};
+
+declare global {
+  interface Window {
+    __HLS_E2E_PROBE__?: HlsE2EProbeState;
+  }
+}
 
 function getPrimingKey(room: string): string {
   return `playPrimed:${room}`;
@@ -302,6 +321,9 @@ const HlsSyncPlayer = forwardRef<VideoSyncPlayerHandle, HlsSyncPlayerProps>(
 
         const currentDriftDebug = driftDebugRef.current;
         const adapter = adapterRef.current;
+        const playbackEngine = adapter?.getPlaybackEngine() ?? "unsupported";
+        const manifestParsed = adapter?.isManifestParsed() ?? false;
+        const nativeMetadataLoaded = adapter?.isNativeMetadataLoaded() ?? false;
         const nextDebugState: VideoSyncDebugState = {
           phase: phaseRef.current,
           playerTime: currentDriftDebug.playerTime,
@@ -314,6 +336,9 @@ const HlsSyncPlayer = forwardRef<VideoSyncPlayerHandle, HlsSyncPlayerProps>(
           readyState: readyStateRef.current,
           buffering: bufferingRef.current,
           readinessStage: adapter?.getReadinessStage() ?? "INIT",
+          playbackEngine,
+          manifestParsed,
+          nativeMetadataLoaded,
           recoveryState: recoveryStateRef.current,
           recoveryAttemptsWindow: `auth:${authRecoveryAttemptsRef.current.length}/${AUTH_RECOVERY_MAX_ATTEMPTS} net:${networkRecoveryStepRef.current}/2`,
           lastErrorClass: lastErrorClassRef.current,
@@ -327,6 +352,19 @@ const HlsSyncPlayer = forwardRef<VideoSyncPlayerHandle, HlsSyncPlayerProps>(
             : null,
           ...patch,
         };
+
+        if (typeof window !== "undefined" && shouldExposeHlsE2EProbe) {
+          window.__HLS_E2E_PROBE__ = {
+            playbackEngine,
+            manifestParsed,
+            nativeMetadataLoaded,
+            readinessStage: nextDebugState.readinessStage ?? "INIT",
+            readyState: nextDebugState.readyState ?? 0,
+            buffering: Boolean(nextDebugState.buffering),
+            recoveryState: nextDebugState.recoveryState ?? "IDLE",
+            playbackStartState: nextDebugState.playbackStartState ?? "IDLE",
+          };
+        }
 
         const nextSignature = JSON.stringify(nextDebugState);
         if (nextSignature === lastDebugSignatureRef.current) {
@@ -1837,6 +1875,9 @@ const HlsSyncPlayer = forwardRef<VideoSyncPlayerHandle, HlsSyncPlayerProps>(
           if (!cancelled) {
             const message =
               error instanceof Error ? error.message.toLowerCase() : "";
+            const unsupportedPlayback = /not supported on this browser/i.test(
+              message,
+            );
             const errorClass: HlsRecoveryErrorClass =
               message.includes("403") || message.includes("401")
                 ? "AUTH_SUSPECTED"
@@ -1845,6 +1886,13 @@ const HlsSyncPlayer = forwardRef<VideoSyncPlayerHandle, HlsSyncPlayerProps>(
               lastAuthErrorAtMsRef.current = Date.now();
             }
             updateLastErrorClass(errorClass);
+            if (unsupportedPlayback) {
+              updateRecoveryState("DEGRADED");
+              updatePlaybackStartState("DEGRADED");
+              setStatusIfChanged("HLS playback is not supported on this browser.");
+              publishDebugState();
+              return;
+            }
             updatePlaybackStartState("IDLE", {
               keepStatus: true,
             });
@@ -1873,6 +1921,7 @@ const HlsSyncPlayer = forwardRef<VideoSyncPlayerHandle, HlsSyncPlayerProps>(
       hasAccess,
       invalidateStartupAttempt,
       playbackConfigError,
+      publishDebugState,
       recoverFromPlaybackFailure,
       screening,
       setAutoplayBlockedState,
@@ -2314,6 +2363,9 @@ const HlsSyncPlayer = forwardRef<VideoSyncPlayerHandle, HlsSyncPlayerProps>(
 
     useEffect(() => {
       return () => {
+        if (typeof window !== "undefined") {
+          delete window.__HLS_E2E_PROBE__;
+        }
         clearGestureOverlayTimers();
       };
     }, [clearGestureOverlayTimers]);

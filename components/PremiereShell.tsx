@@ -147,7 +147,10 @@ export default function PremiereShell({ room, initialBootstrap }: PremiereShellP
         current.lastErrorClass === next.lastErrorClass &&
         current.playbackStartState === next.playbackStartState &&
         current.autoplayBlocked === next.autoplayBlocked &&
-        current.playIntentActive === next.playIntentActive
+        current.playIntentActive === next.playIntentActive &&
+        current.playbackEngine === next.playbackEngine &&
+        current.manifestParsed === next.manifestParsed &&
+        current.nativeMetadataLoaded === next.nativeMetadataLoaded
       ) {
         return current;
       }
@@ -313,6 +316,12 @@ export default function PremiereShell({ room, initialBootstrap }: PremiereShellP
           <p>playbackStartState: {syncDebugState.playbackStartState ?? "n/a"}</p>
           <p>autoplayBlocked: {String(syncDebugState.autoplayBlocked ?? false)}</p>
           <p>playIntentActive: {String(syncDebugState.playIntentActive ?? false)}</p>
+          <p>playbackEngine: {syncDebugState.playbackEngine ?? "n/a"}</p>
+          <p>manifestParsed: {String(syncDebugState.manifestParsed ?? false)}</p>
+          <p>
+            nativeMetadataLoaded:{" "}
+            {String(syncDebugState.nativeMetadataLoaded ?? false)}
+          </p>
           <p>
             recoveryAttemptsWindow: {syncDebugState.recoveryAttemptsWindow ?? "n/a"}
           </p>

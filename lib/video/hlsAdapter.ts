@@ -5,6 +5,12 @@ import Hls, {
   type LoaderConfiguration,
   type LoaderContext,
 } from "hls.js";
+import {
+  HLS_MIME_TYPE,
+  manifestParsedForEngine,
+  selectHlsEngine,
+  type HlsPlaybackEngine,
+} from "@/lib/video/hlsEngineSelection";
 
 export type HlsFatalError = {
   statusCode?: number;
@@ -47,6 +53,8 @@ export class HlsPlaybackAdapter {
 
   private nativeHls = false;
 
+  private playbackEngine: HlsPlaybackEngine = "unsupported";
+
   private mediaAttached = false;
 
   private metadataLoaded = false;
@@ -84,7 +92,15 @@ export class HlsPlaybackAdapter {
   }
 
   isManifestParsed(): boolean {
-    return this.manifestParsed;
+    return manifestParsedForEngine(this.playbackEngine, this.manifestParsed);
+  }
+
+  getPlaybackEngine(): HlsPlaybackEngine {
+    return this.playbackEngine;
+  }
+
+  isNativeMetadataLoaded(): boolean {
+    return this.playbackEngine === "native" && this.metadataLoaded;
   }
 
   isBuffering(): boolean {
@@ -105,7 +121,7 @@ export class HlsPlaybackAdapter {
       return false;
     }
 
-    if (!this.nativeHls && !this.manifestParsed) {
+    if (this.playbackEngine === "hls.js" && !this.isManifestParsed()) {
       return false;
     }
 
@@ -169,6 +185,7 @@ export class HlsPlaybackAdapter {
     this.manifestUrl = manifestUrl;
     this.buffering = false;
     this.nativeHls = false;
+    this.playbackEngine = "unsupported";
     this.mediaAttached = false;
     this.metadataLoaded = false;
     this.manifestParsed = false;
@@ -205,18 +222,38 @@ export class HlsPlaybackAdapter {
       });
     });
 
-    if (video.canPlayType("application/vnd.apple.mpegurl")) {
-      this.nativeHls = true;
+    const userAgent =
+      typeof navigator !== "undefined" && typeof navigator.userAgent === "string"
+        ? navigator.userAgent
+        : "";
+    const hlsJsSupported = Hls.isSupported();
+    const nativeCanPlay = video.canPlayType(HLS_MIME_TYPE) !== "";
+    const selectedEngine = selectHlsEngine({
+      userAgent,
+      hlsJsSupported,
+      nativeCanPlay,
+    });
+
+    this.playbackEngine = selectedEngine;
+    this.nativeHls = selectedEngine === "native";
+
+    if (selectedEngine === "native") {
       this.mediaAttached = true;
-      this.manifestParsed = true;
       this.readinessStage = "MANIFEST_LOADING";
       video.src = manifestUrl;
       video.load();
       return;
     }
 
-    if (!Hls.isSupported()) {
-      throw new Error("HLS playback is not supported on this browser.");
+    if (selectedEngine === "unsupported") {
+      const unsupportedError = new Error(
+        "HLS playback is not supported on this browser.",
+      );
+      this.emitFatal({
+        details: unsupportedError.message,
+        isForbidden: false,
+      });
+      throw unsupportedError;
     }
 
     const manifestOrigin = new URL(manifestUrl).origin;
@@ -389,6 +426,7 @@ export class HlsPlaybackAdapter {
     this.manifestParsed = false;
     this.buffering = false;
     this.nativeHls = false;
+    this.playbackEngine = "unsupported";
     this.mediaAttached = false;
     this.metadataLoaded = false;
     this.pendingSeekSec = null;
