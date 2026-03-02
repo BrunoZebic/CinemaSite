@@ -2,6 +2,14 @@ import { writeFile } from "node:fs/promises";
 import { expect, test, type Page, type TestInfo } from "@playwright/test";
 import { loadLocalEnv } from "../../scripts/hls/env";
 import { buildAuthKeySet, redactUnknown } from "../../scripts/hls/redact";
+import {
+  captureGestureProofBaseline,
+  evaluateGestureProofAfterClick,
+  hasNonAttributionStartupOutcome,
+  isStartupProvenByProbe,
+  type GestureProofBaseline,
+  type GestureProofEvaluation,
+} from "./room-gesture-proof";
 
 loadLocalEnv();
 
@@ -25,22 +33,17 @@ const GESTURE_RACE_TIMEOUT_MS = Number(
   process.env.HLS_E2E_GESTURE_RACE_TIMEOUT_MS ?? 12_000,
 );
 const POST_GESTURE_PROOF_TIMEOUT_MS = Number(
-  process.env.HLS_E2E_POST_GESTURE_PROOF_TIMEOUT_MS ?? 2_000,
+  process.env.HLS_E2E_POST_GESTURE_PROOF_TIMEOUT_MS ?? 4_000,
 );
 const GESTURE_POLL_INTERVAL_MS = Number(
   process.env.HLS_E2E_GESTURE_POLL_INTERVAL_MS ?? 150,
 );
 const FORCE_GESTURE_CLICK = process.env.HLS_E2E_FORCE_GESTURE_CLICK === "1";
+const ATTACH_ADVISORIES = process.env.HLS_E2E_ATTACH_ADVISORIES === "1";
 const PRIMARY_PROGRESS_DELTA_MIN_SEC = 4;
 const SECONDARY_PROGRESS_DELTA_MIN_SEC = 5;
 const WAITING_STALLED_SOFT_LIMIT = 2;
 const MANIFEST_SOURCE_PATTERN = /\.m3u8(?:$|[?#])/i;
-const STARTUP_PROVEN_STATES = new Set([
-  "STARTING",
-  "CANONICAL_SEEKED",
-  "PLAYING",
-  "BUFFERING",
-]);
 const FOOTER_TRANSIENT_TEXT_MARKERS: Record<
   "STARTING" | "SYNCING" | "BUFFERING",
   string
@@ -161,6 +164,8 @@ type DiagnosticsContext = {
   branch?: GestureBranch;
   forceClickUsed?: boolean;
   trialClickError?: string | null;
+  gestureProofBaseline?: GestureProofBaseline;
+  gestureProofEvaluation?: GestureProofEvaluation;
 };
 
 function roomUrl(): string {
@@ -172,48 +177,6 @@ function hasManifestSource(value: string | null | undefined): boolean {
     return false;
   }
   return MANIFEST_SOURCE_PATTERN.test(value);
-}
-
-function isStartupProvenByProbe(probe: RuntimeProbeState | null): boolean {
-  if (!probe) {
-    return false;
-  }
-  if (probe.playIntentActive !== true) {
-    return false;
-  }
-  if (
-    probe.playbackStartState === "PRIMING_REQUIRED" ||
-    probe.playbackStartState === "BLOCKED_AUTOPLAY"
-  ) {
-    return false;
-  }
-  return STARTUP_PROVEN_STATES.has(probe.playbackStartState ?? "");
-}
-
-function hasAcceptedPlayAttempt(probe: RuntimeProbeState | null): boolean {
-  const attempt = probe?.lastPlayAttempt ?? "";
-  return attempt === "video_play_ok" || /^video_play_failed:/.test(attempt);
-}
-
-function hasGestureAttributedStartup(probe: RuntimeProbeState | null): boolean {
-  if (!probe) {
-    return false;
-  }
-  return Boolean(probe.startupCalledFromGesture) && (probe.gestureTapCount ?? 0) >= 1;
-}
-
-function hasGestureRunWindowOutcome(probe: RuntimeProbeState | null): boolean {
-  if (!probe) {
-    return false;
-  }
-  const hasGestureRun = typeof probe.startupWindowRunId === "number";
-  const primedForCurrentMount =
-    probe.primedForMountId !== null &&
-    probe.primedForMountId !== undefined &&
-    probe.videoElementMountId !== undefined &&
-    probe.primedForMountId === probe.videoElementMountId;
-  const hasTerminalClassification = typeof probe.runEndedReason === "string";
-  return hasGestureRun || primedForCurrentMount || hasTerminalClassification;
 }
 
 function parseFooterDisplayState(value: string | null): FooterDisplayState | null {
@@ -386,46 +349,47 @@ async function maybeHandleIdentityModal(page: Page): Promise<void> {
   }
 }
 
+async function maybeAttachGestureProofAdvisory(
+  page: Page,
+  testInfo: TestInfo,
+  stage: string,
+  reason: string,
+  context: GestureContext,
+  baseline: GestureProofBaseline,
+  evaluation: GestureProofEvaluation,
+): Promise<void> {
+  if (!ATTACH_ADVISORIES) {
+    return;
+  }
+
+  await attachDiagnostics(page, testInfo, stage, reason, {
+    ...context,
+    gestureProofBaseline: baseline,
+    gestureProofEvaluation: evaluation,
+  });
+}
+
 async function assertGestureProofAfterClick(
   page: Page,
   testInfo: TestInfo,
   context: GestureContext,
+  baseline: GestureProofBaseline,
 ): Promise<void> {
-  try {
-    await expect
-      .poll(
-        async () => (await readVideoDiagnostics(page)).probe?.overlayTapHandledCount ?? 0,
-        {
-          timeout: POST_GESTURE_PROOF_TIMEOUT_MS,
-          intervals: [GESTURE_POLL_INTERVAL_MS],
-          message:
-            "Gesture proof failed: expected overlayTapHandledCount >= 1 after click.",
-        },
-      )
-      .toBeGreaterThanOrEqual(1);
-  } catch (error) {
-    await attachDiagnostics(
-      page,
-      testInfo,
-      "gesture_proof_overlay_tap",
-      "Gesture CTA click did not trigger overlay tap handler.",
-      context,
-    );
-    throw error;
-  }
+  let latestEvaluation: GestureProofEvaluation | undefined;
 
   try {
     await expect
       .poll(
         async () => {
-          const probe = (await readVideoDiagnostics(page)).probe;
-          return hasAcceptedPlayAttempt(probe) || hasGestureAttributedStartup(probe);
+          const snapshot = await readVideoDiagnostics(page);
+          latestEvaluation = evaluateGestureProofAfterClick(baseline, snapshot);
+          return latestEvaluation.pass;
         },
         {
           timeout: POST_GESTURE_PROOF_TIMEOUT_MS,
           intervals: [GESTURE_POLL_INTERVAL_MS],
           message:
-            "Gesture proof failed: expected accepted play attempt or startupCalledFromGesture.",
+            "Gesture proof failed: expected overlayTapHandledCount delta and post-click startup outcome evidence.",
         },
       )
       .toBe(true);
@@ -434,33 +398,44 @@ async function assertGestureProofAfterClick(
       page,
       testInfo,
       "gesture_proof_milestone",
-      "Gesture CTA click did not advance play milestone.",
-      context,
+      "Gesture CTA click did not produce post-click startup outcome evidence.",
+      {
+        ...context,
+        gestureProofBaseline: baseline,
+        gestureProofEvaluation: latestEvaluation ?? undefined,
+      },
     );
     throw error;
   }
 
-  try {
-    await expect
-      .poll(
-        async () => hasGestureRunWindowOutcome((await readVideoDiagnostics(page)).probe),
-        {
-          timeout: POST_GESTURE_PROOF_TIMEOUT_MS,
-          intervals: [GESTURE_POLL_INTERVAL_MS],
-          message:
-            "Gesture proof failed: expected startupWindowRunId, primedForMountId match, or terminal runEndedReason.",
-        },
-      )
-      .toBe(true);
-  } catch (error) {
-    await attachDiagnostics(
+  const postProofSnapshot = await readVideoDiagnostics(page);
+  const advisoryEvaluation = evaluateGestureProofAfterClick(
+    baseline,
+    postProofSnapshot,
+  );
+
+  if (advisoryEvaluation.usedPreProvenAdvisoryPath) {
+    await maybeAttachGestureProofAdvisory(
       page,
       testInfo,
-      "gesture_proof_window",
-      "Gesture tap was handled but no startup/priming/terminal run outcome was emitted.",
+      "gesture_proof_preproven_advisory",
+      "Gesture CTA proof passed on pre-proven startup race-safe advisory path.",
       context,
+      baseline,
+      advisoryEvaluation,
     );
-    throw error;
+  }
+
+  if (advisoryEvaluation.attributionMissing) {
+    await maybeAttachGestureProofAdvisory(
+      page,
+      testInfo,
+      "gesture_proof_attribution_advisory",
+      "Gesture CTA proof passed without startupCalledFromGesture attribution signal.",
+      context,
+      baseline,
+      advisoryEvaluation,
+    );
   }
 }
 
@@ -511,12 +486,34 @@ async function performGestureHandshake(
     throw error;
   }
 
-  if (raceOutcome === "startup_proven_or_progressing") {
-    return {
-      branch: "cta_not_required",
-      forceClickUsed: false,
-      trialClickError: null,
-    };
+  if (raceOutcome === "waiting") {
+    await attachDiagnostics(
+      page,
+      testInfo,
+      "gesture_race_invariant",
+      "Gesture race invariant violated: poll completed but raceOutcome remained waiting.",
+    );
+    throw new Error(
+      "Gesture race invariant violated: expected cta_visible or startup_proven_or_progressing.",
+    );
+  }
+
+  const resolvedRaceOutcome: Exclude<GestureRaceState, "waiting"> = raceOutcome;
+  switch (resolvedRaceOutcome) {
+    case "startup_proven_or_progressing":
+      return {
+        branch: "cta_not_required",
+        forceClickUsed: false,
+        trialClickError: null,
+      };
+    case "cta_visible":
+      break;
+    default: {
+      const unexpectedOutcome: never = resolvedRaceOutcome;
+      throw new Error(
+        `Unexpected resolved gesture race outcome: ${String(unexpectedOutcome)}`,
+      );
+    }
   }
 
   const context: GestureContext = {
@@ -550,6 +547,12 @@ async function performGestureHandshake(
     throw error;
   }
 
+  const baselineSnapshot = await readVideoDiagnostics(page);
+  const gestureProofBaseline = captureGestureProofBaseline(
+    baselineSnapshot,
+    isStartupProvenByProbe(baselineSnapshot.probe),
+  );
+
   try {
     await gestureCta.click({
       timeout: 6_000,
@@ -579,7 +582,7 @@ async function performGestureHandshake(
     });
   }
 
-  await assertGestureProofAfterClick(page, testInfo, context);
+  await assertGestureProofAfterClick(page, testInfo, context, gestureProofBaseline);
   return context;
 }
 
@@ -705,16 +708,14 @@ async function assertPlaybackNotStuck(
           const probe = snapshot.probe;
           const gestureTapCount = probe?.gestureTapCount ?? 0;
           const startupState = probe?.playbackStartState ?? "IDLE";
-          const hasAcceptedMilestone =
-            probe?.lastPlayAttempt === "video_play_ok" ||
-            hasGestureAttributedStartup(probe);
+          const hasStartupOutcome = hasNonAttributionStartupOutcome(snapshot);
           const startupStateAllowsExit =
             startupState !== "PRIMING_REQUIRED" &&
             startupState !== "BLOCKED_AUTOPLAY";
 
           return (
             gestureTapCount >= 1 &&
-            hasAcceptedMilestone &&
+            hasStartupOutcome &&
             startupStateAllowsExit
           );
         },

@@ -218,6 +218,102 @@ If missing, tests should fail with a clear message:
 All test credentials must be stored in `.env.local` and listed in `.env.example`
 without real values.
 
+## 10) Testing Maturity Model (Project Standard)
+
+This project uses explicit testing maturity levels.  
+All new work must declare (implicitly or explicitly) which level applies.
+
+When escalating a feature’s testing level, this document **must be updated accordingly**.
+
+---
+
+## Level 2 — Component / Unit
+
+**Characteristics**
+- Pure logic tests
+- Render tests
+- No real browser lifecycle
+
+**Use for**
+- Simple UI
+- Stateless components
+- Utility logic
+
+---
+
+## Level 3 — Basic E2E
+
+**Characteristics**
+- Real browser (Playwright)
+- User flows verified
+- No invariant enforcement
+- Limited branch modeling
+
+**Use for**
+- Login
+- Room creation
+- Invite/join flows
+- Simple form submissions
+
+---
+
+## Level 4 — Branch-Aware E2E
+
+**Characteristics**
+- Deterministic polling (no arbitrary sleeps)
+- Explicit branch modeling
+- Causal proof chain (event → outcome)
+- No reliance on visual-only assertions
+- Stable test IDs required
+
+**Use for**
+- Multi-step flows
+- Async transitions
+- State-dependent UI
+- Invite + gesture gating
+- Non-trivial UI state coordination
+
+---
+
+## Level 5 — Coordinator + Invariant Model
+
+**Characteristics**
+- Single lifecycle owner (coordinator)
+- Explicit supersession and suppression rules
+- Run IDs and terminal reasons
+- Window-scoped invariant checks
+- Deterministic probe surface (e.g., __HLS_E2E_PROBE__)
+- Structured, redacted failure artifacts
+- Overlap / churn classification
+
+**Use for**
+- Media playback
+- Real-time sync
+- Token lifecycle flows
+- Complex async ownership systems
+
+---
+
+## Rule of Thumb
+
+- Default new features to **Level 3**.
+- Escalate to **Level 4** when async branching appears.
+- Escalate to **Level 5** only when lifecycle ownership or race risk justifies it.
+- Do **not** apply Level 5 discipline to simple CRUD/UI flows.
+
+---
+
+## Mandatory Governance Rule
+
+If a feature or subsystem is intentionally moved to a higher testing maturity level (e.g., from Level 3 to Level 4, or Level 4 to Level 5):
+
+1. The change must be explicitly stated in the PR summary.
+2. The affected subsystem must be documented in this `AGENTS.md` file under the appropriate level.
+3. Required tests for that level become mandatory gates for future changes to that subsystem.
+4. Regression tests reflecting the new level must exist before declaring the migration complete.
+
+Failure to update this file when escalating maturity is considered incomplete implementation.
+
 ---
 
 By working in this repo, you agree to follow this contract.

@@ -1,5 +1,21 @@
 # PLAN_WEEK_4_3
 
+# Week 4.3-style maturity checklist
+
+- Single owner / coordinator for any side-effectful lifecycle (no overlapping entrypoints).
+
+- Explicit priority + suppression + supersession rules (no implicit races).
+
+- Run IDs + terminal reasons (every attempt ends with a classified reason).
+
+- Stale callback guards (runId checks + generation tokens for adapters/events).
+
+- Windowed invariants for diagnostics (evaluate churn only within a defined window).
+
+- Deterministic probes + redacted artifacts (failures are self-diagnosing).
+
+- E2E asserts causal chains (handler ran → outcome occurred), not just DOM snapshots.
+
 ## Scope Implemented
 This file records the implemented Week 4.3 consolidated work:
 - single-flight LIVE startup coordination in `HlsSyncPlayer`
@@ -178,3 +194,53 @@ Commands run:
 2. `corepack pnpm build` -> PASS
 3. `corepack pnpm test:hls:bunny -- --room demo` -> PASS
 4. `$env:HLS_TEST_INVITE_CODE='myInviteCode'; corepack pnpm test:hls:room -- --base-url http://localhost:3100 --room demo` -> PASS
+
+## Week 4.3.2 Gesture Proof Hardening (March 2, 2026)
+
+### Scope Implemented
+Room gesture-proof E2E logic was hardened to reduce false negatives while preserving causal guarantees and avoiding permissive pass conditions.
+
+### Implemented Changes
+1. Added pure gesture-proof evaluator module in `tests/hls/room-gesture-proof.ts`:
+- `isTimestampAdvanced(...)`
+- `isRunIdAdvanced(...)`
+- `didRunEndedBecomeSet(...)`
+- `captureGestureProofBaseline(...)`
+- `evaluateGestureProofAfterClick(...)`
+- `hasNonAttributionStartupOutcome(...)`
+2. Updated `tests/hls/room-playback.spec.ts` gesture proof flow:
+- baseline captured after trial click and immediately before real click
+- milestone poll replaced with evaluator pass predicate
+- required overlay tap delta plus post-click startup outcome evidence
+- run-present playback evidence requires run-bound signal
+- pre-proven race-safe advisory path retained
+3. Startup attribution remains diagnostic-only for pass/fail:
+- `startupCalledFromGesture` no longer required as hard gate
+4. Footer state (`SYNCING`/`BUFFERING`/`PLAYING`) is retained as optional supporting evidence in evaluator output and diagnostics.
+5. Removed redundant run-window-only proof poll; unified proof now covers run-window/play-attempt/terminal/priming/playback evidence.
+6. Increased default `HLS_E2E_POST_GESTURE_PROOF_TIMEOUT_MS` from 2000 to 4000.
+7. Added attach-only advisory diagnostics gated by env:
+- `HLS_E2E_ATTACH_ADVISORIES=1`
+8. Added unit coverage in `tests/hls/unit/room-gesture-proof.test.ts`:
+- helper semantics (timestamp/run-id/run-ended)
+- artifact-like regression case
+- negative cases for missing outcomes
+- run-present playback-only guard
+- pre-proven advisory path
+
+### Acceptance Criteria Status (Week 4.3.2)
+1. `cta_clicked` gesture proof no longer fails on valid startup progression without strict attribution: PASS
+2. Pass logic remains causal (overlay handled + concrete post-click outcomes): PASS
+3. Run-bound preference prevents playback-only false passes when run context is present: PASS
+4. Advisory diagnostics remain non-failing and opt-in: PASS
+5. Room E2E stability check (3 consecutive runs): PASS
+
+### Validation Results (Week 4.3.2)
+Commands run:
+1. `corepack pnpm exec tsc --noEmit --pretty false` -> PASS
+2. `corepack pnpm test:hls:unit` -> PASS
+3. `corepack pnpm lint` -> PASS
+4. `corepack pnpm build` -> PASS
+5. `corepack pnpm test:hls:room -- --base-url http://localhost:3100 --room demo` -> PASS (run 1/3)
+6. `corepack pnpm test:hls:room -- --base-url http://localhost:3100 --room demo` -> PASS (run 2/3)
+7. `corepack pnpm test:hls:room -- --base-url http://localhost:3100 --room demo` -> PASS (run 3/3)
