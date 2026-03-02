@@ -41,6 +41,47 @@ const STARTUP_PROVEN_STATES = new Set([
   "PLAYING",
   "BUFFERING",
 ]);
+const FOOTER_TRANSIENT_TEXT_MARKERS: Record<
+  "STARTING" | "SYNCING" | "BUFFERING",
+  string
+> = {
+  STARTING: "Starting",
+  SYNCING: "Syncing",
+  BUFFERING: "Buffering",
+};
+
+type FooterDisplayState =
+  | "SILENCE"
+  | "DEGRADED"
+  | "PRIMING_REQUIRED"
+  | "AUTOPLAY_BLOCKED"
+  | "WAITING_PRIMED"
+  | "STARTING"
+  | "SYNCING"
+  | "BUFFERING"
+  | "PLAYING"
+  | "LOADING";
+
+const FOOTER_TEXT_BY_STATE: Record<FooterDisplayState, string> = {
+  SILENCE: "Silence interval in progress.",
+  DEGRADED: "Playback issue - Retry",
+  PRIMING_REQUIRED: "Tap to enable playback.",
+  AUTOPLAY_BLOCKED: "Tap to play.",
+  WAITING_PRIMED: "Playback primed. Waiting for start.",
+  STARTING: "Starting...",
+  SYNCING: "Syncing...",
+  BUFFERING: "Buffering stream...",
+  PLAYING: "Live playback synchronized.",
+  LOADING: "Loading stream...",
+};
+
+const FOOTER_EXACT_MATCH_STATES = new Set<FooterDisplayState>([
+  "PRIMING_REQUIRED",
+  "AUTOPLAY_BLOCKED",
+  "PLAYING",
+  "DEGRADED",
+  "WAITING_PRIMED",
+]);
 
 type RuntimeProbeState = {
   playbackEngine?: string;
@@ -103,6 +144,8 @@ type VideoDiagnostics = {
   paused: boolean;
   error: { code: number } | null;
   probe: RuntimeProbeState | null;
+  footerText: string;
+  footerDisplayState: string | null;
 };
 
 type GestureBranch = "cta_clicked" | "cta_not_required";
@@ -173,6 +216,63 @@ function hasGestureRunWindowOutcome(probe: RuntimeProbeState | null): boolean {
   return hasGestureRun || primedForCurrentMount || hasTerminalClassification;
 }
 
+function parseFooterDisplayState(value: string | null): FooterDisplayState | null {
+  if (!value) {
+    return null;
+  }
+  return value in FOOTER_TEXT_BY_STATE ? (value as FooterDisplayState) : null;
+}
+
+function expectedFooterStateFromProbe(
+  probe: RuntimeProbeState | null,
+): FooterDisplayState | null {
+  if (!probe) {
+    return null;
+  }
+  if (probe.recoveryState === "DEGRADED") {
+    return "DEGRADED";
+  }
+  if (probe.playbackStartState === "PRIMING_REQUIRED") {
+    return "PRIMING_REQUIRED";
+  }
+  if (probe.playbackStartState === "BLOCKED_AUTOPLAY") {
+    return "AUTOPLAY_BLOCKED";
+  }
+  if (probe.playbackStartState === "STARTING") {
+    return "STARTING";
+  }
+  if (probe.playbackStartState === "CANONICAL_SEEKED") {
+    return "SYNCING";
+  }
+  if (probe.playbackStartState === "BUFFERING") {
+    return "BUFFERING";
+  }
+  if (probe.playbackStartState === "PLAYING") {
+    return "PLAYING";
+  }
+  if (
+    probe.playbackStartState === "IDLE" &&
+    probe.isPrimed === true &&
+    probe.playIntentActive !== true
+  ) {
+    return "WAITING_PRIMED";
+  }
+  return null;
+}
+
+function shouldBanLegacyNotReadyText(probe: RuntimeProbeState | null): boolean {
+  if (!probe) {
+    return false;
+  }
+  if (typeof probe.startupWindowRunId === "number") {
+    return true;
+  }
+  if (typeof probe.playbackStartState === "string" && probe.playbackStartState !== "IDLE") {
+    return true;
+  }
+  return probe.runEndedReason !== null && probe.runEndedReason !== undefined;
+}
+
 async function readVideoDiagnostics(page: Page): Promise<VideoDiagnostics> {
   return page.evaluate(() => {
     const media = document.querySelector(
@@ -181,6 +281,11 @@ async function readVideoDiagnostics(page: Page): Promise<VideoDiagnostics> {
 
     const probe = (window as unknown as { __HLS_E2E_PROBE__?: RuntimeProbeState })
       .__HLS_E2E_PROBE__;
+    const footer = document.querySelector(
+      '[data-testid="video-status-note"]',
+    ) as HTMLElement | null;
+    const footerText = footer?.textContent?.trim() ?? "";
+    const footerDisplayState = footer?.getAttribute("data-footer-display-state") ?? null;
 
     if (!media) {
       return {
@@ -192,6 +297,8 @@ async function readVideoDiagnostics(page: Page): Promise<VideoDiagnostics> {
         paused: true,
         error: null,
         probe: probe ?? null,
+        footerText,
+        footerDisplayState,
       };
     }
 
@@ -204,6 +311,8 @@ async function readVideoDiagnostics(page: Page): Promise<VideoDiagnostics> {
       paused: media.paused,
       error: media.error ? { code: media.error.code } : null,
       probe: probe ?? null,
+      footerText,
+      footerDisplayState,
     };
   });
 }
@@ -224,6 +333,8 @@ async function attachDiagnostics(
     paused: true,
     error: null,
     probe: null,
+    footerText: "",
+    footerDisplayState: null,
   }));
 
   const safePayload = redactUnknown(
@@ -648,6 +759,79 @@ async function assertNoSuppressionPriorityRegression(
   );
 }
 
+async function assertFooterAlignedWithProbe(
+  page: Page,
+  testInfo: TestInfo,
+  stage: string,
+  context: GestureContext,
+): Promise<void> {
+  try {
+    await expect
+      .poll(
+        async () => {
+          const snapshot = await readVideoDiagnostics(page);
+          const footerText = snapshot.footerText;
+          const footerDisplayState = parseFooterDisplayState(
+            snapshot.footerDisplayState,
+          );
+          const expectedState = expectedFooterStateFromProbe(snapshot.probe);
+
+          if (footerText.toLowerCase().includes("sync idle")) {
+            return false;
+          }
+
+          if (expectedState && footerDisplayState !== expectedState) {
+            return false;
+          }
+
+          if (expectedState) {
+            const expectedText = FOOTER_TEXT_BY_STATE[expectedState];
+            if (FOOTER_EXACT_MATCH_STATES.has(expectedState)) {
+              if (footerText !== expectedText) {
+                return false;
+              }
+            } else {
+              const marker =
+                expectedState === "STARTING" ||
+                expectedState === "SYNCING" ||
+                expectedState === "BUFFERING"
+                  ? FOOTER_TRANSIENT_TEXT_MARKERS[expectedState]
+                  : expectedText;
+              if (!footerText.includes(marker)) {
+                return false;
+              }
+            }
+          }
+
+          if (
+            shouldBanLegacyNotReadyText(snapshot.probe) &&
+            footerText.includes("Player is not ready yet.")
+          ) {
+            return false;
+          }
+
+          return true;
+        },
+        {
+          timeout: STARTUP_PRE_GATE_TIMEOUT_MS,
+          intervals: [GESTURE_POLL_INTERVAL_MS],
+          message:
+            "Footer status did not align with probe/coordinator state in expected window.",
+        },
+      )
+      .toBe(true);
+  } catch (error) {
+    await attachDiagnostics(
+      page,
+      testInfo,
+      stage,
+      "Footer status line was not aligned with playback/probe state.",
+      context,
+    );
+    throw error;
+  }
+}
+
 async function skipIfRoomNotPlayable(page: Page): Promise<void> {
   const isClosed = await page
     .getByText("Screening has closed.")
@@ -683,12 +867,24 @@ test.describe("Room Playback", () => {
     await skipIfRoomNotPlayable(page);
 
     const gestureContext = await performGestureHandshake(page, testInfo);
+    await assertFooterAlignedWithProbe(
+      page,
+      testInfo,
+      "footer_align_after_handshake_primary",
+      gestureContext,
+    );
     await assertChromiumEnginePath(page, browserName, testInfo, gestureContext);
     await assertPlaybackNotStuck(page, testInfo, gestureContext);
     await waitForPlaybackProgress(
       page,
       testInfo,
       "playback_progress_primary",
+      gestureContext,
+    );
+    await assertFooterAlignedWithProbe(
+      page,
+      testInfo,
+      "footer_align_after_progress_primary",
       gestureContext,
     );
     await assertNoSuppressionPriorityRegression(page, testInfo, gestureContext);
@@ -706,11 +902,23 @@ test.describe("Room Playback", () => {
     await skipIfRoomNotPlayable(page);
 
     const firstGestureContext = await performGestureHandshake(page, testInfo);
+    await assertFooterAlignedWithProbe(
+      page,
+      testInfo,
+      "footer_align_after_handshake_pre_reload",
+      firstGestureContext,
+    );
     await assertChromiumEnginePath(page, browserName, testInfo, firstGestureContext);
     await waitForPlaybackProgress(
       page,
       testInfo,
       "playback_progress_pre_reload",
+      firstGestureContext,
+    );
+    await assertFooterAlignedWithProbe(
+      page,
+      testInfo,
+      "footer_align_after_progress_pre_reload",
       firstGestureContext,
     );
 
@@ -765,12 +973,24 @@ test.describe("Room Playback", () => {
     await page.waitForTimeout(IDLE_DELAY_MS);
 
     const secondGestureContext = await performGestureHandshake(page, testInfo);
+    await assertFooterAlignedWithProbe(
+      page,
+      testInfo,
+      "footer_align_after_handshake_post_reload",
+      secondGestureContext,
+    );
     await assertChromiumEnginePath(page, browserName, testInfo, secondGestureContext);
     await assertPlaybackNotStuck(page, testInfo, secondGestureContext);
     await waitForPlaybackProgress(
       page,
       testInfo,
       "playback_progress_post_reload",
+      secondGestureContext,
+    );
+    await assertFooterAlignedWithProbe(
+      page,
+      testInfo,
+      "footer_align_after_progress_post_reload",
       secondGestureContext,
     );
     await assertNoSuppressionPriorityRegression(page, testInfo, secondGestureContext);

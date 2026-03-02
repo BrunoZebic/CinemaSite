@@ -91,6 +91,17 @@ type LastPlayAttempt =
   | "attempted"
   | "video_play_ok"
   | `video_play_failed:${string}`;
+type FooterDisplayState =
+  | "SILENCE"
+  | "DEGRADED"
+  | "PRIMING_REQUIRED"
+  | "AUTOPLAY_BLOCKED"
+  | "WAITING_PRIMED"
+  | "STARTING"
+  | "SYNCING"
+  | "BUFFERING"
+  | "PLAYING"
+  | "LOADING";
 type StartupRunCounterSnapshot = {
   runId: number;
   hlsInstanceIdAtStart: number;
@@ -218,6 +229,74 @@ function statusTextForPlaybackStartState(state: PlaybackStartState): string {
   }
   if (state === "DEGRADED") {
     return "Playback issue - Retry";
+  }
+  if (state === "PLAYING") {
+    return "Live playback synchronized.";
+  }
+  return "Loading stream...";
+}
+
+function deriveFooterDisplayState(params: {
+  phase: PremierePhase;
+  recoveryState: HlsRecoveryState;
+  playbackStartState: PlaybackStartState;
+  isPrimed: boolean;
+}): FooterDisplayState {
+  const { phase, recoveryState, playbackStartState, isPrimed } = params;
+  if (phase === "SILENCE") {
+    return "SILENCE";
+  }
+  if (recoveryState === "DEGRADED") {
+    return "DEGRADED";
+  }
+  if (playbackStartState === "PRIMING_REQUIRED") {
+    return "PRIMING_REQUIRED";
+  }
+  if (playbackStartState === "BLOCKED_AUTOPLAY") {
+    return "AUTOPLAY_BLOCKED";
+  }
+  if (phase === "WAITING" && isPrimed && playbackStartState === "IDLE") {
+    return "WAITING_PRIMED";
+  }
+  if (playbackStartState === "STARTING") {
+    return "STARTING";
+  }
+  if (playbackStartState === "CANONICAL_SEEKED") {
+    return "SYNCING";
+  }
+  if (playbackStartState === "BUFFERING") {
+    return "BUFFERING";
+  }
+  if (playbackStartState === "PLAYING") {
+    return "PLAYING";
+  }
+  return "LOADING";
+}
+
+function footerDisplayStateToText(state: FooterDisplayState): string {
+  if (state === "SILENCE") {
+    return "Silence interval in progress.";
+  }
+  if (state === "DEGRADED") {
+    return "Playback issue - Retry";
+  }
+  if (state === "PRIMING_REQUIRED") {
+    return "Tap to enable playback.";
+  }
+  if (state === "AUTOPLAY_BLOCKED") {
+    return "Tap to play.";
+  }
+  if (state === "WAITING_PRIMED") {
+    return "Playback primed. Waiting for start.";
+  }
+  if (state === "STARTING") {
+    return "Starting...";
+  }
+  if (state === "SYNCING") {
+    return "Syncing...";
+  }
+  if (state === "BUFFERING") {
+    return "Buffering stream...";
   }
   if (state === "PLAYING") {
     return "Live playback synchronized.";
@@ -391,7 +470,7 @@ const HlsSyncPlayer = forwardRef<VideoSyncPlayerHandle, HlsSyncPlayerProps>(
 
     const [isPlayerReady, setIsPlayerReady] = useState(false);
     const [isPrimed, setIsPrimed] = useState(false);
-    const [statusText, setStatusText] = useState("Loading stream...");
+    const [, setStatusText] = useState("Loading stream...");
     const [isMuted, setIsMuted] = useState(false);
     const [volume, setVolume] = useState(1);
     const [isPlaying, setIsPlaying] = useState(false);
@@ -3047,6 +3126,13 @@ const HlsSyncPlayer = forwardRef<VideoSyncPlayerHandle, HlsSyncPlayerProps>(
       !showRecoveryOverlay &&
       phase === "WAITING" &&
       !isGestureRequired;
+    const footerDisplayState = deriveFooterDisplayState({
+      phase,
+      recoveryState,
+      playbackStartState,
+      isPrimed,
+    });
+    const footerStatusText = footerDisplayStateToText(footerDisplayState);
 
     useEffect(() => {
       if (!showPlayer || recoveryState === "DEGRADED") {
@@ -3241,10 +3327,13 @@ const HlsSyncPlayer = forwardRef<VideoSyncPlayerHandle, HlsSyncPlayerProps>(
             </p>
           </div>
         )}
-        <p className="video-status-note">
-          {statusText}{" "}
-          {buffering ? "(buffering)" : ""}{" "}
-          {phase === "LIVE" && !isDriftLoopActiveRef.current ? "(sync idle)" : ""}
+        {/* Footer text is derived from coordinator-facing state; legacy statusText is retained for compatibility/debug flows. */}
+        <p
+          className="video-status-note"
+          data-testid="video-status-note"
+          data-footer-display-state={footerDisplayState}
+        >
+          {footerStatusText}
         </p>
       </div>
     );

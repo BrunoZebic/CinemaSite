@@ -135,3 +135,46 @@ Commands run:
 ## Notes
 1. `doubleStartSuspected` remains a diagnostic classifier; thresholds/conditions can be tuned with additional CI samples.
 2. `suppressedThenTappedSuspected` is present in probe output and currently guarded to avoid false positives in passing runs.
+
+## Week 4.3.1 Footer Status Alignment (March 2, 2026)
+
+### Scope Implemented
+Footer status rendering under the HLS player is now aligned with the Week 4.3 state machine by deriving display text from coordinator-facing state rather than legacy mutable status text.
+
+### Implemented Changes
+1. Added footer display enum + mapping helpers in `components/Video/HlsSyncPlayer.tsx`:
+- `FooterDisplayState`
+- `deriveFooterDisplayState(...)`
+- `footerDisplayStateToText(...)`
+2. Footer derivation now treats `playbackStartState` as authoritative for action-needed states:
+- `PRIMING_REQUIRED`, `BLOCKED_AUTOPLAY`, `STARTING`, `CANONICAL_SEEKED`, `BUFFERING`, `PLAYING`
+3. Added guarded `WAITING_PRIMED` display branch:
+- `phase === "WAITING" && isPrimed && playbackStartState === "IDLE"`
+4. Footer rendering no longer uses legacy composed output:
+- removed `"(sync idle)"`
+- removed appended `"(buffering)"`
+5. Footer now exposes stable E2E hooks:
+- `data-testid="video-status-note"`
+- `data-footer-display-state="<enum>"`
+6. Added inline maintenance comment near footer render:
+- footer is derived; legacy `statusText` is retained for compatibility/debug flows.
+7. Room E2E coverage updated in `tests/hls/room-playback.spec.ts`:
+- footer text + enum read from DOM diagnostics
+- probe-to-footer alignment assertions with hybrid strictness
+- explicit legacy-copy ban condition tied to run/window/startup state
+
+### Acceptance Criteria Status (Week 4.3.1)
+1. Footer derived from `FooterDisplayState` instead of `statusText`: PASS
+2. Priming/autoplay footer messaging driven by `playbackStartState`: PASS
+3. `WAITING_PRIMED` only under guarded condition (`WAITING + primed + IDLE`): PASS
+4. Footer never contains `sync idle`: PASS
+5. Footer no longer shows legacy not-ready text after explicit post-idle conditions: PASS
+6. Room E2E with footer alignment checks: PASS
+7. Bunny smoke remains passing: PASS
+
+### Validation Results (Week 4.3.1)
+Commands run:
+1. `corepack pnpm lint` -> PASS
+2. `corepack pnpm build` -> PASS
+3. `corepack pnpm test:hls:bunny -- --room demo` -> PASS
+4. `$env:HLS_TEST_INVITE_CODE='myInviteCode'; corepack pnpm test:hls:room -- --base-url http://localhost:3100 --room demo` -> PASS
