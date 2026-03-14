@@ -2,7 +2,7 @@
 
 This file defines non-negotiable rules for agents (Codex) working on this repo.
 
-If an instruction conflicts with a user-approved plan doc (PLAN_WEEK_*), follow the plan doc. If multiple plans conflict, follow the newest revision.
+If an instruction conflicts with a user-approved plan doc (PLAN_WEEK_*), follow the plan doc. If multiple plans conflict, follow the newest revision. If two plans share the same revision date, the one with the higher week/sub-version number takes precedence. If still ambiguous, stop and ask.
 
 ## 0) Product Doctrine (Do Not Drift)
 
@@ -42,6 +42,16 @@ Small refactors are allowed only if they:
 - are justified in the final summary
 
 If you want to do a refactor, propose it first.
+
+### 1.3 Rollback and recovery
+If a mandatory gate (lint, build, test) fails mid-task:
+- Stop. Do not force past the failure or attempt speculative workarounds.
+- Leave the branch intact with the failing state visible — do not silently revert.
+- Report the failure in the final summary with redacted error output.
+- Note which parts of the implementation are complete vs incomplete.
+- If the failure blocks all forward progress, stop and ask for guidance.
+
+Do not abandon a branch without reporting. Do not open a blocking issue on behalf of the user unless asked.
 
 ## 2) Repo Hygiene Rules
 
@@ -191,6 +201,7 @@ Stop implementation and ask for confirmation if:
 - You need to relax token enforcement or expose unsigned URLs
 - You want to add “library/social” features
 - You want to introduce a new dependency that affects runtime playback
+- You want to add or replace a dev/build dependency (test framework, build plugin, bundler config) that materially changes build output, CI time, or test infrastructure
 - You want to rewrite the phase machine or drift correction semantics
 
 ## 9) Local Test Credentials (Development Only)
@@ -224,6 +235,20 @@ This project uses explicit testing maturity levels.
 All new work must declare (implicitly or explicitly) which level applies.
 
 When escalating a feature’s testing level, this document **must be updated accordingly**.
+
+### 10.1 Subsystem Ownership Registry
+
+| Subsystem | Key Files | Current Level |
+|-----------|-----------|---------------|
+| HLS playback + coordinator | `components/Video/HlsSyncPlayer.tsx`, `lib/video/hlsAdapter.ts` | Level 5 |
+| Token lifecycle | `lib/video/bunnyToken.ts`, token refresh in HlsSyncPlayer | Level 5 |
+| Gesture priming + proof | `components/Video/HlsSyncPlayer.tsx` (gesture sections), `tests/hls/room-gesture-proof.ts` | Level 4 |
+| Room access + invite flow | `app/api/rooms/[room]/access/`, invite cookie logic | Level 3 |
+| Phase state machine | `lib/premiere/phase.ts`, `components/PremiereShell.tsx` | Level 3 |
+| Chat | `lib/chat/`, `components/Chat/` | Level 2 |
+| Engine selection | `lib/video/hlsEngineSelection.ts` | Level 2 |
+
+When you touch a subsystem, check this table to know which testing level applies. When escalating a subsystem, update this table as part of the PR.
 
 ---
 
