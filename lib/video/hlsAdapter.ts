@@ -492,12 +492,15 @@ export class HlsPlaybackAdapter {
     });
 
     hls.on(Hls.Events.SUBTITLE_TRACKS_UPDATED, (_event, data) => {
+      console.log("[subtitle-dbg] SUBTITLE_TRACKS_UPDATED fired, tracks:", JSON.stringify(data.subtitleTracks.map(t => ({ id: t.id, lang: t.lang, name: t.name }))));
       if (this.isGenerationStale(generation)) {
+        console.log("[subtitle-dbg] generation stale, skipping");
         return;
       }
       const track = data.subtitleTracks.find(
         (t) => t.lang === "en" || t.name?.toLowerCase().includes("english"),
       );
+      console.log("[subtitle-dbg] english track found:", track ? `id=${track.id} lang=${track.lang} name=${track.name}` : "none");
       if (!track) return;
       this._englishTrackIndex = track.id;
       this._hasSubtitleTrack = true;
