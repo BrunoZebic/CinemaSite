@@ -97,10 +97,11 @@ http://localhost:3000/premiere/demo
 - `pnpm test:hls:bunny -- --room demo`
 - `pnpm test:hls:guard -- --url "<signed-manifest-url>"`
 - `pnpm test:hls:room -- --base-url http://localhost:3100 --room demo --invite-code "<code>"`
+- `pnpm test:hls:room:webkit -- --base-url http://localhost:3101 --room demo --invite-code "<code>"`
 
 ## Week 4 HLS Self-Test Harness
 
-Install Playwright Chromium once:
+Install Playwright browsers once:
 ```bash
 pnpm playwright:install
 ```
@@ -121,17 +122,24 @@ Optional full room E2E:
 pnpm test:hls:room -- --base-url http://localhost:3100 --room demo --invite-code "..."
 ```
 
+Optional iPhone-sized WebKit room E2E:
+```bash
+pnpm test:hls:room:webkit -- --base-url http://localhost:3101 --room demo --invite-code "..."
+```
+
 Behavior highlights:
 - smoke server binds to `127.0.0.1` and browser origin is always `http://localhost:4173` (or `HLS_SMOKE_PORT`)
 - room E2E canonical origin is `http://localhost:3100` (or `HLS_TEST_BASE_URL`)
+- WebKit room E2E canonical origin is `http://localhost:3101`; it boots the app with `NEXT_PUBLIC_SYNC_DEBUG=true` so the real debug panel stays mounted during the UI regression suite
 - strict token guard fails if unsigned URLs are public (`2xx`) or redirect (`3xx`)
 - retry is one time only and only for timeout/network/5xx classes in Bunny smoke mode
 - all test diagnostics redact auth query params (`token`, `bcdn_token`, `expires`, `token_path`)
-- full suite requires Bunny CORS to allow both `http://localhost:4173` and `http://localhost:3100`
+- full suite requires Bunny CORS to allow `http://localhost:4173`, `http://localhost:3100`, and `http://localhost:3101`
 - if room Chromium E2E fails with `MEDIA_ERR_SRC_NOT_SUPPORTED` and video source points to `.m3u8`, treat it as engine-selection/native-path regression before CORS triage
+- WebKit playback assertions are capability-aware and may skip on runtimes without native HLS support; set `HLS_E2E_REQUIRE_WEBKIT_HLS=1` to turn those skips into failures on supported environments
 
 Recommended Bunny CORS dev snippet:
-- allow origins: `http://localhost:4173`, `http://localhost:3100`
+- allow origins: `http://localhost:4173`, `http://localhost:3100`, `http://localhost:3101`
 - allow methods: `GET, HEAD, OPTIONS`
 - allow request headers: `Range`
 

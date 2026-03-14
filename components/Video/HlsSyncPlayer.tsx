@@ -117,6 +117,8 @@ type HlsE2EProbeState = {
   playbackEngine: HlsPlaybackEngine;
   manifestParsed: boolean;
   nativeMetadataLoaded: boolean;
+  nativeCanPlayHls: boolean;
+  nativeHlsMimeType: string | null;
   readinessStage: string;
   readyState: number;
   buffering: boolean;
@@ -526,6 +528,8 @@ const HlsSyncPlayer = forwardRef<VideoSyncPlayerHandle, HlsSyncPlayerProps>(
         const playbackEngine = adapter?.getPlaybackEngine() ?? "unsupported";
         const manifestParsed = adapter?.isManifestParsed() ?? false;
         const nativeMetadataLoaded = adapter?.isNativeMetadataLoaded() ?? false;
+        const nativeCanPlayHls = adapter?.getNativeCanPlayHls() ?? false;
+        const nativeHlsMimeType = adapter?.getNativeHlsMimeType() ?? null;
         const lifecycleDebug: HlsAdapterLifecycleDebug | null =
           adapter?.getLifecycleDebug() ?? null;
 
@@ -583,6 +587,8 @@ const HlsSyncPlayer = forwardRef<VideoSyncPlayerHandle, HlsSyncPlayerProps>(
           playbackEngine,
           manifestParsed,
           nativeMetadataLoaded,
+          nativeCanPlayHls,
+          nativeHlsMimeType,
           recoveryState: recoveryStateRef.current,
           recoveryAttemptsWindow: `auth:${authRecoveryAttemptsRef.current.length}/${AUTH_RECOVERY_MAX_ATTEMPTS} net:${networkRecoveryStepRef.current}/2`,
           lastErrorClass: lastErrorClassRef.current,
@@ -632,6 +638,8 @@ const HlsSyncPlayer = forwardRef<VideoSyncPlayerHandle, HlsSyncPlayerProps>(
             playbackEngine,
             manifestParsed,
             nativeMetadataLoaded,
+            nativeCanPlayHls,
+            nativeHlsMimeType,
             readinessStage: nextDebugState.readinessStage ?? "INIT",
             readyState: nextDebugState.readyState ?? 0,
             buffering: Boolean(nextDebugState.buffering),

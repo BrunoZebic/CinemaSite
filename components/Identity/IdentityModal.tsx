@@ -1,6 +1,7 @@
 "use client";
 
 import { type FormEvent, useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import {
   createIdentity,
   isValidNickname,
@@ -24,7 +25,7 @@ export default function IdentityModal({ open, onSave }: IdentityModalProps) {
     }
   }, [open]);
 
-  if (!open) {
+  if (!open || typeof document === "undefined") {
     return null;
   }
 
@@ -41,10 +42,10 @@ export default function IdentityModal({ open, onSave }: IdentityModalProps) {
     onSave(createIdentity(normalized));
   }
 
-  return (
+  return createPortal(
     <>
       <div className="identity-backdrop" />
-      <div className="identity-modal">
+      <div data-testid="identity-modal-root" className="identity-modal">
         <div className="identity-card slide-in">
           <h2 className="identity-title">Choose your premiere identity</h2>
           <p className="identity-copy">
@@ -77,6 +78,7 @@ export default function IdentityModal({ open, onSave }: IdentityModalProps) {
           </form>
         </div>
       </div>
-    </>
+    </>,
+    document.body,
   );
 }

@@ -150,7 +150,9 @@ export default function PremiereShell({ room, initialBootstrap }: PremiereShellP
         current.playIntentActive === next.playIntentActive &&
         current.playbackEngine === next.playbackEngine &&
         current.manifestParsed === next.manifestParsed &&
-        current.nativeMetadataLoaded === next.nativeMetadataLoaded
+        current.nativeMetadataLoaded === next.nativeMetadataLoaded &&
+        current.nativeCanPlayHls === next.nativeCanPlayHls &&
+        current.nativeHlsMimeType === next.nativeHlsMimeType
       ) {
         return current;
       }
@@ -247,7 +249,10 @@ export default function PremiereShell({ room, initialBootstrap }: PremiereShellP
           )}
         </section>
 
-        <aside className={`chat-drawer ${mobileChatOpen ? "open" : ""}`}>
+        <aside
+          data-testid="chat-drawer"
+          className={`chat-drawer ${mobileChatOpen ? "open" : ""}`}
+        >
           <div className="chat-drawer-head">
             <h3 className="chat-drawer-title">Audience Chat</h3>
             <button
@@ -300,7 +305,7 @@ export default function PremiereShell({ room, initialBootstrap }: PremiereShellP
       />
 
       {syncDebugEnabled && syncDebugState ? (
-        <aside className="sync-debug-panel">
+        <aside data-testid="sync-debug-panel" className="sync-debug-panel">
           <p className="sync-debug-title">Sync Debug</p>
           <p>phase: {syncDebugState.phase}</p>
           <p>playerTime: {syncDebugState.playerTime.toFixed(2)}</p>
@@ -322,6 +327,8 @@ export default function PremiereShell({ room, initialBootstrap }: PremiereShellP
             nativeMetadataLoaded:{" "}
             {String(syncDebugState.nativeMetadataLoaded ?? false)}
           </p>
+          <p>nativeCanPlayHls: {String(syncDebugState.nativeCanPlayHls ?? false)}</p>
+          <p>nativeHlsMimeType: {syncDebugState.nativeHlsMimeType ?? "n/a"}</p>
           <p>
             recoveryAttemptsWindow: {syncDebugState.recoveryAttemptsWindow ?? "n/a"}
           </p>

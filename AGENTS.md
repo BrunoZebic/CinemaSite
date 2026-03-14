@@ -98,6 +98,9 @@ you MUST run:
 If you touched invite/gesture UI or room flow, ALSO run:
 - `pnpm test:hls:room -- --base-url http://localhost:3100 --room demo --invite-code "<code>"`
 
+If you touched iPhone/WebKit room UI, modal layout, sync debug overlay interactivity, or WebKit-specific playback logic, ALSO run:
+- `pnpm test:hls:room:webkit -- --base-url http://localhost:3101 --room demo --invite-code "<code>"`
+
 ### 3.3 Debugging / targeted runs
 - Validate a specific manifest:
   - `pnpm test:hls:url -- --url "<manifest-url>"`
@@ -244,11 +247,14 @@ When escalating a feature’s testing level, this document **must be updated acc
 | Token lifecycle | `lib/video/bunnyToken.ts`, token refresh in HlsSyncPlayer | Level 5 |
 | Gesture priming + proof | `components/Video/HlsSyncPlayer.tsx` (gesture sections), `tests/hls/room-gesture-proof.ts` | Level 4 |
 | Room access + invite flow | `app/api/rooms/[room]/access/`, invite cookie logic | Level 3 |
+| WebKit mobile room UI + tap flow | `components/Identity/IdentityModal.tsx`, `components/PremiereShell.tsx`, `tests/hls/room-webkit-ui.spec.ts` | Level 4 |
+| WebKit room playback validation | `tests/hls/room-webkit-playback.spec.ts`, WebKit room Playwright project | Level 4 |
 | Phase state machine | `lib/premiere/phase.ts`, `components/PremiereShell.tsx` | Level 3 |
 | Chat | `lib/chat/`, `components/Chat/` | Level 2 |
 | Engine selection | `lib/video/hlsEngineSelection.ts` | Level 2 |
 
 When you touch a subsystem, check this table to know which testing level applies. When escalating a subsystem, update this table as part of the PR.
+The WebKit room suite is split intentionally: `tests/hls/room-webkit-ui.spec.ts` is always-on mobile UI coverage, while `tests/hls/room-webkit-playback.spec.ts` is capability-gated and may skip on WebKit runtimes without native HLS unless `HLS_E2E_REQUIRE_WEBKIT_HLS=1`.
 
 ---
 

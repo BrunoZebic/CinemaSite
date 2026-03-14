@@ -15,6 +15,17 @@ function isMainModule(): boolean {
 async function main(): Promise<void> {
   loadLocalEnv();
   const args = parseArgs(process.argv.slice(2));
+  const port = getStringFlag(args.flags, "port") ?? "3100";
+  const project =
+    getStringFlag(args.flags, "project") ??
+    process.env.HLS_E2E_PROJECT?.trim() ??
+    "room-e2e";
+  const syncDebugFlag = args.flags["sync-debug"];
+  const syncDebug =
+    syncDebugFlag === true ||
+    (typeof syncDebugFlag === "string" &&
+      syncDebugFlag.trim().toLowerCase() !== "false" &&
+      syncDebugFlag.trim() !== "0");
   const room =
     getStringFlag(args.flags, "room") ??
     process.env.HLS_TEST_ROOM?.trim() ??
@@ -24,7 +35,7 @@ async function main(): Promise<void> {
     getStringFlag(args.flags, "base-url") ??
     process.env.HLS_TEST_BASE_URL?.trim() ??
     process.env.HLS_E2E_BASE_URL?.trim() ??
-    "http://localhost:3100";
+    `http://localhost:${port}`;
   const inviteCode =
     getStringFlag(args.flags, "invite-code") ??
     process.env.HLS_TEST_INVITE_CODE?.trim() ??
@@ -38,12 +49,16 @@ async function main(): Promise<void> {
   const env = {
     ...process.env,
     PW_ROOM_WEBSERVER: "1",
+    PW_ROOM_PORT: port,
+    PW_ROOM_SYNC_DEBUG: syncDebug ? "1" : "0",
+    NEXT_PUBLIC_SYNC_DEBUG: syncDebug ? "true" : "false",
     HLS_TEST_ROOM: room,
     HLS_TEST_BASE_URL: baseUrl,
     HLS_TEST_INVITE_CODE: inviteCode,
     HLS_E2E_ROOM: room,
     HLS_E2E_BASE_URL: baseUrl,
     HLS_E2E_INVITE_CODE: inviteCode,
+    HLS_E2E_PROJECT: project,
   };
 
   const playwrightCli = path.resolve(
@@ -53,8 +68,7 @@ async function main(): Promise<void> {
   const argsList = [
     playwrightCli,
     "test",
-    "tests/hls/room-playback.spec.ts",
-    "--project=room-e2e",
+    `--project=${project}`,
   ];
 
   const exitCode = await new Promise<number>((resolve, reject) => {

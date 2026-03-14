@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  detectNativeHlsSupport,
   isLikelySafariWebKit,
   manifestParsedForEngine,
   selectHlsEngine,
@@ -94,6 +95,40 @@ test("returns unsupported when no engine is available", () => {
     }),
     "unsupported",
   );
+});
+
+test("detectNativeHlsSupport returns first matching MIME alias", () => {
+  const support = detectNativeHlsSupport((mimeType) => {
+    if (mimeType === "application/x-mpegURL") {
+      return "maybe";
+    }
+    return "";
+  });
+
+  assert.deepEqual(support, {
+    canPlay: true,
+    mimeType: "application/x-mpegURL",
+  });
+});
+
+test("detectNativeHlsSupport returns primary MIME alias when supported", () => {
+  const support = detectNativeHlsSupport((mimeType) =>
+    mimeType === "application/vnd.apple.mpegurl" ? "probably" : "",
+  );
+
+  assert.deepEqual(support, {
+    canPlay: true,
+    mimeType: "application/vnd.apple.mpegurl",
+  });
+});
+
+test("detectNativeHlsSupport returns unsupported when all aliases fail", () => {
+  const support = detectNativeHlsSupport(() => "");
+
+  assert.deepEqual(support, {
+    canPlay: false,
+    mimeType: null,
+  });
 });
 
 test("manifestParsed is treated as hls.js-only semantics", () => {

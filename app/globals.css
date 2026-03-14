@@ -950,6 +950,11 @@ a {
   background: rgba(8, 13, 22, 0.9);
   z-index: 70;
   padding: 0.6rem 0.75rem;
+  pointer-events: none;
+}
+
+.sync-debug-panel * {
+  pointer-events: none;
 }
 
 .sync-debug-title {
