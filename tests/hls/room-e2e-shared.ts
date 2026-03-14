@@ -17,6 +17,8 @@ export const INVITE_CODE =
   process.env.HLS_TEST_INVITE_CODE?.trim() ??
   process.env.HLS_E2E_INVITE_CODE?.trim() ??
   "";
+const OPTIONAL_IDENTITY_TIMEOUT_MS = 1_000;
+const OPTIONAL_IDENTITY_POLL_INTERVALS_MS = [200, 200, 200, 200, 200];
 
 export type RuntimeProbeState = {
   playbackEngine?: string;
@@ -208,22 +210,27 @@ export async function completeIdentityFlow(
   const identityInput = page.getByTestId("identity-nickname-input");
 
   if (optional) {
-    for (let attempt = 0; attempt < 5; attempt += 1) {
-      const visible = await identityInput.isVisible().catch(() => false);
-      if (!visible) {
-        await page.waitForTimeout(200);
-        continue;
-      }
+    const becameVisible = await expect
+      .poll(async () => identityInput.isVisible().catch(() => false), {
+        timeout: OPTIONAL_IDENTITY_TIMEOUT_MS,
+        intervals: OPTIONAL_IDENTITY_POLL_INTERVALS_MS,
+      })
+      .toBe(true)
+      .then(
+        () => true,
+        () => false,
+      );
 
-      await identityInput.fill(nickname);
-      await page.getByTestId("identity-submit").click();
-      await expect(identityInput).toBeHidden({
-        timeout: 10_000,
-      });
-      return true;
+    if (!becameVisible) {
+      return false;
     }
 
-    return false;
+    await identityInput.fill(nickname);
+    await page.getByTestId("identity-submit").click();
+    await expect(identityInput).toBeHidden({
+      timeout: 10_000,
+    });
+    return true;
   }
 
   await expect(identityInput).toBeVisible({
