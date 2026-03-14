@@ -136,6 +136,7 @@ type RuntimeProbeState = {
   playAttemptStartAtMs?: number | null;
   doubleStartSuspected?: boolean;
   suppressedThenTappedSuspected?: boolean;
+  hasSubtitleTrack?: boolean;
 };
 
 type VideoDiagnostics = {
@@ -1027,5 +1028,88 @@ test.describe("Room Playback", () => {
     if (instabilityCount > WAITING_STALLED_SOFT_LIMIT) {
       expect(progressDelta).toBeGreaterThanOrEqual(SECONDARY_PROGRESS_DELTA_MIN_SEC);
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Subtitle toggle tests — requires a subtitle-enabled room
+// ---------------------------------------------------------------------------
+
+const SUBTITLE_ROOM =
+  process.env.HLS_TEST_SUBTITLE_ROOM?.trim() ?? "";
+const SUBTITLE_INVITE_CODE =
+  process.env.HLS_TEST_SUBTITLE_INVITE_CODE?.trim() ?? "";
+
+function subtitleRoomUrl(): string {
+  return `${BASE_URL.replace(/\/+$/, "")}/premiere/${encodeURIComponent(SUBTITLE_ROOM)}`;
+}
+
+async function completeInviteFlowWithCode(page: Page, code: string): Promise<void> {
+  const inviteInput = page.getByTestId("invite-code-input");
+  await expect(inviteInput).toBeVisible({ timeout: 20_000 });
+  await inviteInput.fill(code);
+  await page.getByTestId("invite-submit").click();
+  await expect(inviteInput).toBeHidden({ timeout: 20_000 });
+}
+
+async function skipIfSubtitleRoomNotPlayable(page: Page): Promise<void> {
+  const isClosed = await page
+    .getByText("Screening has closed.")
+    .isVisible()
+    .catch(() => false);
+  const isDiscussion = await page
+    .getByText("Discussion phase is open.")
+    .isVisible()
+    .catch(() => false);
+  test.skip(
+    isClosed || isDiscussion,
+    `Subtitle room "${SUBTITLE_ROOM}" is not in a playable phase (WAITING/LIVE required).`,
+  );
+}
+
+test.describe("Subtitle Toggle", () => {
+  test.skip(!SUBTITLE_ROOM, "Missing HLS_TEST_SUBTITLE_ROOM.");
+  test.skip(!SUBTITLE_INVITE_CODE, "Missing HLS_TEST_SUBTITLE_INVITE_CODE.");
+
+  test("subtitle track detected, CC button visible and toggleable", async (
+    { page },
+    testInfo,
+  ) => {
+    await page.goto(subtitleRoomUrl(), { waitUntil: "domcontentloaded" });
+    await completeInviteFlowWithCode(page, SUBTITLE_INVITE_CODE);
+    await maybeHandleIdentityModal(page);
+    await skipIfSubtitleRoomNotPlayable(page);
+
+    const gestureContext = await performGestureHandshake(page, testInfo);
+
+    // Wait until the adapter has resolved the English subtitle track
+    await expect
+      .poll(
+        async () => {
+          const diag = await readVideoDiagnostics(page);
+          return diag.probe?.hasSubtitleTrack ?? false;
+        },
+        {
+          timeout: STARTUP_PRE_GATE_TIMEOUT_MS,
+          intervals: [GESTURE_POLL_INTERVAL_MS],
+          message: "Expected hasSubtitleTrack=true in probe after manifest parsed.",
+        },
+      )
+      .toBe(true);
+
+    // CC button must be visible and default ON
+    const ccButton = page.getByTestId("subtitle-toggle");
+    await expect(ccButton).toBeVisible();
+    await expect(ccButton).toHaveAttribute("aria-pressed", "true");
+
+    // Toggle off
+    await ccButton.click();
+    await expect(ccButton).toHaveAttribute("aria-pressed", "false");
+
+    // Toggle back on
+    await ccButton.click();
+    await expect(ccButton).toHaveAttribute("aria-pressed", "true");
+
+    void gestureContext; // consumed
   });
 });
