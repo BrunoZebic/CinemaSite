@@ -1,6 +1,15 @@
 export const HLS_MIME_TYPE = "application/vnd.apple.mpegurl";
+export const NATIVE_HLS_MIME_TYPES = [
+  HLS_MIME_TYPE,
+  "application/x-mpegURL",
+  "audio/mpegurl",
+] as const;
 
 export type HlsPlaybackEngine = "hls.js" | "native" | "unsupported";
+export type NativeHlsSupport = {
+  canPlay: boolean;
+  mimeType: string | null;
+};
 
 export type HlsEngineSelectionInput = {
   userAgent: string;
@@ -51,6 +60,24 @@ export function selectHlsEngine(
   }
 
   return "unsupported";
+}
+
+export function detectNativeHlsSupport(
+  canPlayType: (mimeType: string) => string,
+): NativeHlsSupport {
+  for (const mimeType of NATIVE_HLS_MIME_TYPES) {
+    if (canPlayType(mimeType).trim() !== "") {
+      return {
+        canPlay: true,
+        mimeType,
+      };
+    }
+  }
+
+  return {
+    canPlay: false,
+    mimeType: null,
+  };
 }
 
 export function manifestParsedForEngine(

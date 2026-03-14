@@ -50,6 +50,8 @@ export interface VideoSyncDebugState {
   playbackEngine?: HlsPlaybackEngine;
   manifestParsed?: boolean;
   nativeMetadataLoaded?: boolean;
+  nativeCanPlayHls?: boolean;
+  nativeHlsMimeType?: string | null;
   operationOwner?: "none" | "startup" | "token_refresh" | "recovery";
   reinitLocked?: boolean;
   pendingReinitReason?: "token_refresh" | "recovery" | null;

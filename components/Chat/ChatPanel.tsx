@@ -591,7 +591,10 @@ export default function ChatPanel({
         helperText={composerHelpText}
         onSend={handleSend}
       />
-      <IdentityModal open={mounted && !identity} onSave={handleIdentitySave} />
+      <IdentityModal
+        open={mounted && hasAccess && !identity}
+        onSave={handleIdentitySave}
+      />
     </section>
   );
 }

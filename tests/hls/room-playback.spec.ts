@@ -1,7 +1,4 @@
-import { writeFile } from "node:fs/promises";
 import { expect, test, type Page, type TestInfo } from "@playwright/test";
-import { loadLocalEnv } from "../../scripts/hls/env";
-import { buildAuthKeySet, redactUnknown } from "../../scripts/hls/redact";
 import {
   captureGestureProofBaseline,
   evaluateGestureProofAfterClick,
@@ -10,20 +7,16 @@ import {
   type GestureProofBaseline,
   type GestureProofEvaluation,
 } from "./room-gesture-proof";
-
-loadLocalEnv();
-
-const AUTH_KEYS = buildAuthKeySet(process.env.HLS_AUTH_KEYS_EXTRA ?? null);
-const ROOM =
-  process.env.HLS_TEST_ROOM?.trim() ?? process.env.HLS_E2E_ROOM?.trim() ?? "demo";
-const BASE_URL =
-  process.env.HLS_TEST_BASE_URL?.trim() ??
-  process.env.HLS_E2E_BASE_URL?.trim() ??
-  "http://localhost:3100";
-const INVITE_CODE =
-  process.env.HLS_TEST_INVITE_CODE?.trim() ??
-  process.env.HLS_E2E_INVITE_CODE?.trim() ??
-  "";
+import {
+  INVITE_CODE,
+  attachRoomDiagnostics,
+  completeIdentityFlow,
+  completeInviteFlow,
+  readRoomVideoDiagnostics,
+  roomUrl,
+  skipIfRoomNotPlayable,
+  type RuntimeProbeState,
+} from "./room-e2e-shared";
 const IDLE_DELAY_MS = Number(process.env.HLS_E2E_IDLE_DELAY_MS ?? 10_000);
 const STABILITY_WINDOW_MS = Number(process.env.HLS_E2E_STABILITY_WINDOW_MS ?? 10_000);
 const STARTUP_PRE_GATE_TIMEOUT_MS = Number(
@@ -86,71 +79,6 @@ const FOOTER_EXACT_MATCH_STATES = new Set<FooterDisplayState>([
   "WAITING_PRIMED",
 ]);
 
-type RuntimeProbeState = {
-  playbackEngine?: string;
-  manifestParsed?: boolean;
-  nativeMetadataLoaded?: boolean;
-  readinessStage?: string;
-  readyState?: number;
-  buffering?: boolean;
-  recoveryState?: string;
-  playbackStartState?: string;
-  autoplayBlocked?: boolean;
-  playIntentActive?: boolean;
-  operationOwner?: "none" | "startup" | "token_refresh" | "recovery";
-  reinitLocked?: boolean;
-  pendingReinitReason?: "token_refresh" | "recovery" | null;
-  requiresPriming?: boolean;
-  isPrimed?: boolean;
-  primedForMountId?: number | null;
-  startupAttemptId?: number;
-  gestureTapCount?: number;
-  overlayTapHandledCount?: number;
-  lastGestureAtMs?: number | null;
-  lastPlayAttempt?: string | null;
-  startupCalledFromGesture?: boolean;
-  hlsInstanceId?: number;
-  attachCount?: number;
-  detachCount?: number;
-  srcSetCount?: number;
-  loadCalledCount?: number;
-  videoElementMountId?: number;
-  videoRefAssignedAtMs?: number | null;
-  pauseCount?: number;
-  lastPauseReason?: string | null;
-  startupRunStartedCount?: number;
-  startupRunAbortedCount?: number;
-  startupWindowRunId?: number | null;
-  startupWindowStartAtMs?: number | null;
-  startupWindowEndAtMs?: number | null;
-  runEndedReason?:
-    | "progress_reached"
-    | "play_failed"
-    | "handoff_to_recovery"
-    | "aborted_by_supersession"
-    | "aborted_other"
-    | null;
-  lastAbortCause?: string | null;
-  startupSuppressedReason?: "priming_required" | "already_active_run" | null;
-  playAttemptRunId?: number | null;
-  playAttemptStartAtMs?: number | null;
-  doubleStartSuspected?: boolean;
-  suppressedThenTappedSuspected?: boolean;
-};
-
-type VideoDiagnostics = {
-  currentSrc: string;
-  srcAttr: string | null;
-  readyState: number;
-  networkState: number;
-  currentTime: number;
-  paused: boolean;
-  error: { code: number } | null;
-  probe: RuntimeProbeState | null;
-  footerText: string;
-  footerDisplayState: string | null;
-};
-
 type GestureBranch = "cta_clicked" | "cta_not_required";
 type GestureRaceState = "waiting" | "cta_visible" | "startup_proven_or_progressing";
 
@@ -159,18 +87,6 @@ type GestureContext = {
   forceClickUsed: boolean;
   trialClickError: string | null;
 };
-
-type DiagnosticsContext = {
-  branch?: GestureBranch;
-  forceClickUsed?: boolean;
-  trialClickError?: string | null;
-  gestureProofBaseline?: GestureProofBaseline;
-  gestureProofEvaluation?: GestureProofEvaluation;
-};
-
-function roomUrl(): string {
-  return `${BASE_URL.replace(/\/+$/, "")}/premiere/${encodeURIComponent(ROOM)}`;
-}
 
 function hasManifestSource(value: string | null | undefined): boolean {
   if (!value) {
@@ -236,119 +152,6 @@ function shouldBanLegacyNotReadyText(probe: RuntimeProbeState | null): boolean {
   return probe.runEndedReason !== null && probe.runEndedReason !== undefined;
 }
 
-async function readVideoDiagnostics(page: Page): Promise<VideoDiagnostics> {
-  return page.evaluate(() => {
-    const media = document.querySelector(
-      '[data-testid="hls-video"]',
-    ) as HTMLVideoElement | null;
-
-    const probe = (window as unknown as { __HLS_E2E_PROBE__?: RuntimeProbeState })
-      .__HLS_E2E_PROBE__;
-    const footer = document.querySelector(
-      '[data-testid="video-status-note"]',
-    ) as HTMLElement | null;
-    const footerText = footer?.textContent?.trim() ?? "";
-    const footerDisplayState = footer?.getAttribute("data-footer-display-state") ?? null;
-
-    if (!media) {
-      return {
-        currentSrc: "",
-        srcAttr: null,
-        readyState: 0,
-        networkState: 0,
-        currentTime: 0,
-        paused: true,
-        error: null,
-        probe: probe ?? null,
-        footerText,
-        footerDisplayState,
-      };
-    }
-
-    return {
-      currentSrc: media.currentSrc,
-      srcAttr: media.getAttribute("src"),
-      readyState: media.readyState,
-      networkState: media.networkState,
-      currentTime: media.currentTime,
-      paused: media.paused,
-      error: media.error ? { code: media.error.code } : null,
-      probe: probe ?? null,
-      footerText,
-      footerDisplayState,
-    };
-  });
-}
-
-async function attachDiagnostics(
-  page: Page,
-  testInfo: TestInfo,
-  stage: string,
-  reason: string,
-  context: DiagnosticsContext = {},
-): Promise<void> {
-  const diagnostics = await readVideoDiagnostics(page).catch(() => ({
-    currentSrc: "",
-    srcAttr: null,
-    readyState: 0,
-    networkState: 0,
-    currentTime: 0,
-    paused: true,
-    error: null,
-    probe: null,
-    footerText: "",
-    footerDisplayState: null,
-  }));
-
-  const safePayload = redactUnknown(
-    {
-      stage,
-      reason,
-      context,
-      diagnostics,
-    },
-    AUTH_KEYS,
-  );
-
-  const body = JSON.stringify(safePayload, null, 2);
-
-  await testInfo.attach(`room-${stage}-diagnostics`, {
-    body,
-    contentType: "application/json",
-  });
-  await writeFile(testInfo.outputPath(`room-${stage}-diagnostics.json`), body, "utf8");
-}
-
-async function completeInviteFlow(page: Page): Promise<void> {
-  const inviteInput = page.getByTestId("invite-code-input");
-  await expect(inviteInput).toBeVisible({
-    timeout: 20_000,
-  });
-  await inviteInput.fill(INVITE_CODE);
-  await page.getByTestId("invite-submit").click();
-  await expect(inviteInput).toBeHidden({
-    timeout: 20_000,
-  });
-}
-
-async function maybeHandleIdentityModal(page: Page): Promise<void> {
-  const identityInput = page.getByTestId("identity-nickname-input");
-  for (let attempt = 0; attempt < 5; attempt += 1) {
-    const visible = await identityInput.isVisible().catch(() => false);
-    if (!visible) {
-      await page.waitForTimeout(200);
-      continue;
-    }
-
-    await identityInput.fill("Week4Tester");
-    await page.getByTestId("identity-submit").click();
-    await expect(identityInput).toBeHidden({
-      timeout: 10_000,
-    });
-    return;
-  }
-}
-
 async function maybeAttachGestureProofAdvisory(
   page: Page,
   testInfo: TestInfo,
@@ -362,7 +165,7 @@ async function maybeAttachGestureProofAdvisory(
     return;
   }
 
-  await attachDiagnostics(page, testInfo, stage, reason, {
+  await attachRoomDiagnostics(page, testInfo, stage, reason, {
     ...context,
     gestureProofBaseline: baseline,
     gestureProofEvaluation: evaluation,
@@ -381,7 +184,7 @@ async function assertGestureProofAfterClick(
     await expect
       .poll(
         async () => {
-          const snapshot = await readVideoDiagnostics(page);
+          const snapshot = await readRoomVideoDiagnostics(page);
           latestEvaluation = evaluateGestureProofAfterClick(baseline, snapshot);
           return latestEvaluation.pass;
         },
@@ -394,7 +197,7 @@ async function assertGestureProofAfterClick(
       )
       .toBe(true);
   } catch (error) {
-    await attachDiagnostics(
+    await attachRoomDiagnostics(
       page,
       testInfo,
       "gesture_proof_milestone",
@@ -408,7 +211,7 @@ async function assertGestureProofAfterClick(
     throw error;
   }
 
-  const postProofSnapshot = await readVideoDiagnostics(page);
+  const postProofSnapshot = await readRoomVideoDiagnostics(page);
   const advisoryEvaluation = evaluateGestureProofAfterClick(
     baseline,
     postProofSnapshot,
@@ -452,7 +255,7 @@ async function performGestureHandshake(
         async () => {
           const [ctaVisible, snapshot] = await Promise.all([
             gestureCta.isVisible().catch(() => false),
-            readVideoDiagnostics(page),
+            readRoomVideoDiagnostics(page),
           ]);
           if (ctaVisible) {
             raceOutcome = "cta_visible";
@@ -477,7 +280,7 @@ async function performGestureHandshake(
       )
       .not.toBe("waiting");
   } catch (error) {
-    await attachDiagnostics(
+    await attachRoomDiagnostics(
       page,
       testInfo,
       "gesture_race",
@@ -487,7 +290,7 @@ async function performGestureHandshake(
   }
 
   if (raceOutcome === "waiting") {
-    await attachDiagnostics(
+    await attachRoomDiagnostics(
       page,
       testInfo,
       "gesture_race_invariant",
@@ -537,7 +340,7 @@ async function performGestureHandshake(
     });
   } catch (error) {
     context.trialClickError = error instanceof Error ? error.message : String(error);
-    await attachDiagnostics(
+    await attachRoomDiagnostics(
       page,
       testInfo,
       "gesture_trial_click",
@@ -547,7 +350,7 @@ async function performGestureHandshake(
     throw error;
   }
 
-  const baselineSnapshot = await readVideoDiagnostics(page);
+  const baselineSnapshot = await readRoomVideoDiagnostics(page);
   const gestureProofBaseline = captureGestureProofBaseline(
     baselineSnapshot,
     isStartupProvenByProbe(baselineSnapshot.probe),
@@ -559,7 +362,7 @@ async function performGestureHandshake(
     });
   } catch (error) {
     if (!FORCE_GESTURE_CLICK) {
-      await attachDiagnostics(
+      await attachRoomDiagnostics(
         page,
         testInfo,
         "gesture_click",
@@ -611,7 +414,7 @@ async function waitForPlaybackProgress(
       )
       .toBeGreaterThan(1);
   } catch (error) {
-    await attachDiagnostics(
+    await attachRoomDiagnostics(
       page,
       testInfo,
       stage,
@@ -632,12 +435,12 @@ async function assertChromiumEnginePath(
     return;
   }
 
-  const firstSnapshot = await readVideoDiagnostics(page);
+  const firstSnapshot = await readRoomVideoDiagnostics(page);
   if (
     hasManifestSource(firstSnapshot.currentSrc) ||
     hasManifestSource(firstSnapshot.srcAttr)
   ) {
-    await attachDiagnostics(
+    await attachRoomDiagnostics(
       page,
       testInfo,
       "engine_path",
@@ -653,7 +456,7 @@ async function assertChromiumEnginePath(
     await expect
       .poll(
         async () => {
-          const snapshot = await readVideoDiagnostics(page);
+          const snapshot = await readRoomVideoDiagnostics(page);
           const hasNativePath =
             hasManifestSource(snapshot.currentSrc) ||
             hasManifestSource(snapshot.srcAttr);
@@ -673,7 +476,7 @@ async function assertChromiumEnginePath(
       )
       .toBe(true);
   } catch (error) {
-    await attachDiagnostics(
+    await attachRoomDiagnostics(
       page,
       testInfo,
       "engine_path",
@@ -696,7 +499,7 @@ async function assertPlaybackNotStuck(
     await expect
       .poll(
         async () => {
-          const snapshot = await readVideoDiagnostics(page);
+          const snapshot = await readRoomVideoDiagnostics(page);
           if (snapshot.currentTime > 0.2) {
             return true;
           }
@@ -728,7 +531,7 @@ async function assertPlaybackNotStuck(
       )
       .toBe(true);
   } catch (error) {
-    await attachDiagnostics(
+    await attachRoomDiagnostics(
       page,
       testInfo,
       "startup_not_stuck",
@@ -744,11 +547,11 @@ async function assertNoSuppressionPriorityRegression(
   testInfo: TestInfo,
   context: GestureContext,
 ): Promise<void> {
-  const probe = (await readVideoDiagnostics(page)).probe;
+  const probe = (await readRoomVideoDiagnostics(page)).probe;
   if (!probe?.suppressedThenTappedSuspected) {
     return;
   }
-  await attachDiagnostics(
+  await attachRoomDiagnostics(
     page,
     testInfo,
     "suppression_priority_regression",
@@ -770,7 +573,7 @@ async function assertFooterAlignedWithProbe(
     await expect
       .poll(
         async () => {
-          const snapshot = await readVideoDiagnostics(page);
+          const snapshot = await readRoomVideoDiagnostics(page);
           const footerText = snapshot.footerText;
           const footerDisplayState = parseFooterDisplayState(
             snapshot.footerDisplayState,
@@ -822,7 +625,7 @@ async function assertFooterAlignedWithProbe(
       )
       .toBe(true);
   } catch (error) {
-    await attachDiagnostics(
+    await attachRoomDiagnostics(
       page,
       testInfo,
       stage,
@@ -831,22 +634,6 @@ async function assertFooterAlignedWithProbe(
     );
     throw error;
   }
-}
-
-async function skipIfRoomNotPlayable(page: Page): Promise<void> {
-  const isClosed = await page
-    .getByText("Screening has closed.")
-    .isVisible()
-    .catch(() => false);
-  const isDiscussion = await page
-    .getByText("Discussion phase is open.")
-    .isVisible()
-    .catch(() => false);
-
-  test.skip(
-    isClosed || isDiscussion,
-    `Room "${ROOM}" is not in a playable phase (WAITING/LIVE required).`,
-  );
 }
 
 test.beforeEach(async ({ context }) => {
@@ -864,7 +651,7 @@ test.describe("Room Playback", () => {
       waitUntil: "domcontentloaded",
     });
     await completeInviteFlow(page);
-    await maybeHandleIdentityModal(page);
+    await completeIdentityFlow(page, { optional: true });
     await skipIfRoomNotPlayable(page);
 
     const gestureContext = await performGestureHandshake(page, testInfo);
@@ -899,7 +686,7 @@ test.describe("Room Playback", () => {
       waitUntil: "domcontentloaded",
     });
     await completeInviteFlow(page);
-    await maybeHandleIdentityModal(page);
+    await completeIdentityFlow(page, { optional: true });
     await skipIfRoomNotPlayable(page);
 
     const firstGestureContext = await performGestureHandshake(page, testInfo);
@@ -926,7 +713,7 @@ test.describe("Room Playback", () => {
     await page.reload({
       waitUntil: "domcontentloaded",
     });
-    await maybeHandleIdentityModal(page);
+    await completeIdentityFlow(page, { optional: true });
     await expect(page.getByTestId("invite-code-input")).toBeHidden({
       timeout: 10_000,
     });

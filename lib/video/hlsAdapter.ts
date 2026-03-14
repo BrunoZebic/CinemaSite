@@ -6,7 +6,7 @@ import Hls, {
   type LoaderContext,
 } from "hls.js";
 import {
-  HLS_MIME_TYPE,
+  detectNativeHlsSupport,
   manifestParsedForEngine,
   selectHlsEngine,
   type HlsPlaybackEngine,
@@ -70,6 +70,10 @@ export class HlsPlaybackAdapter {
 
   private metadataLoaded = false;
 
+  private nativeCanPlayHls = false;
+
+  private nativeHlsMimeType: string | null = null;
+
   private pendingSeekSec: number | null = null;
 
   private readyResolver: (() => void) | null = null;
@@ -126,6 +130,14 @@ export class HlsPlaybackAdapter {
 
   isNativeMetadataLoaded(): boolean {
     return this.playbackEngine === "native" && this.metadataLoaded;
+  }
+
+  getNativeCanPlayHls(): boolean {
+    return this.nativeCanPlayHls;
+  }
+
+  getNativeHlsMimeType(): string | null {
+    return this.nativeHlsMimeType;
   }
 
   isBuffering(): boolean {
@@ -256,6 +268,8 @@ export class HlsPlaybackAdapter {
     this.playbackEngine = "unsupported";
     this.mediaAttached = false;
     this.metadataLoaded = false;
+    this.nativeCanPlayHls = false;
+    this.nativeHlsMimeType = null;
     this.manifestParsed = false;
     this.pendingSeekSec = null;
     this.attached = false;
@@ -296,7 +310,12 @@ export class HlsPlaybackAdapter {
         ? navigator.userAgent
         : "";
     const hlsJsSupported = Hls.isSupported();
-    const nativeCanPlay = video.canPlayType(HLS_MIME_TYPE) !== "";
+    const nativeHlsSupport = detectNativeHlsSupport((mimeType) =>
+      video.canPlayType(mimeType),
+    );
+    const nativeCanPlay = nativeHlsSupport.canPlay;
+    this.nativeCanPlayHls = nativeCanPlay;
+    this.nativeHlsMimeType = nativeHlsSupport.mimeType;
     const selectedEngine = selectHlsEngine({
       userAgent,
       hlsJsSupported,
@@ -527,6 +546,8 @@ export class HlsPlaybackAdapter {
     this.playbackEngine = "unsupported";
     this.mediaAttached = false;
     this.metadataLoaded = false;
+    this.nativeCanPlayHls = false;
+    this.nativeHlsMimeType = null;
     this.pendingSeekSec = null;
     this.readyResolver = null;
     this.readyPromise = Promise.resolve();

@@ -13,8 +13,9 @@
     "test:hls:bunny": "tsx scripts/hls/runSmoke.ts",
     "test:hls:guard": "tsx scripts/hls/assertTokenEnforcement.ts",
     "test:hls:room": "tsx scripts/hls/runRoomE2E.ts",
+    "test:hls:room:webkit": "tsx scripts/hls/runRoomE2E.ts --project room-e2e-webkit-iphone --port 3101 --sync-debug",
     "test:hls:print-url": "tsx scripts/hls/printSignedUrl.ts",
-    "playwright:install": "playwright install chromium"
+    "playwright:install": "playwright install chromium webkit"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.98.0",
