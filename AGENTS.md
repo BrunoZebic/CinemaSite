@@ -115,7 +115,7 @@ If you touched ANY of:
 - phase-gated UI in `components/Video/`
 - phase-gated chat UI in `components/Chat/`
 you MUST run:
-- `pnpm test:hls:phase -- --base-url http://localhost:3100 --room demo --project room-e2e-chromium`
+- `pnpm test:hls:phase -- --base-url http://localhost:3100 --room demo --invite-code "<code>" --project room-e2e-chromium`
 
 ### 3.4 Debugging / targeted runs
 - Validate a specific manifest:

@@ -1,6 +1,8 @@
 import { createClient } from "@supabase/supabase-js";
 import { loadLocalEnv } from "./env";
 
+loadLocalEnv();
+
 type ScreeningRow = {
   room_slug: string;
   premiere_start_unix_ms: number;
@@ -46,7 +48,6 @@ function getServiceRoleKey(): string {
 }
 
 function createSupabaseAdminClient() {
-  loadLocalEnv();
   return createClient(getSupabaseUrl(), getServiceRoleKey(), {
     auth: {
       persistSession: false,
