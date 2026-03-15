@@ -100,8 +100,43 @@ export class HlsPlaybackAdapter {
 
   private attached = false;
 
+  private _subtitleEnabled: boolean = true;
+
+  private _englishTrackIndex: number | null = null;
+
+  private _englishTextTrack: TextTrack | null = null;
+
+  private _hasSubtitleTrack: boolean = false;
+
+  private _subtitleTrackListener: (() => void) | null = null;
+
   setFatalListener(listener: FatalListener | null): void {
     this.fatalListener = listener;
+  }
+
+  setSubtitleTrackListener(cb: (() => void) | null): void {
+    this._subtitleTrackListener = cb;
+  }
+
+  hasSubtitleTrack(): boolean {
+    return this._hasSubtitleTrack;
+  }
+
+  setSubtitleEnabled(enabled: boolean): void {
+    this._subtitleEnabled = enabled;
+    if (this.hls && this._englishTrackIndex !== null) {
+      this.hls.subtitleDisplay = enabled;
+      if (enabled) {
+        this.hls.subtitleTrack = this._englishTrackIndex;
+      }
+    }
+    if (this._englishTextTrack) {
+      this._englishTextTrack.mode = enabled ? "showing" : "hidden";
+    }
+  }
+
+  getSubtitleEnabled(): boolean {
+    return this._subtitleEnabled;
   }
 
   getReadinessStage(): HlsReadinessStage {
@@ -244,7 +279,49 @@ export class HlsPlaybackAdapter {
     );
   }
 
+  private _tryResolveTrackFromList(tracks: TextTrackList): boolean {
+    for (let i = 0; i < tracks.length; i++) {
+      const track = tracks[i];
+      if (
+        track.language === "en" ||
+        track.label?.toLowerCase().includes("english")
+      ) {
+        this._englishTextTrack = track;
+        this._hasSubtitleTrack = true;
+        track.mode = this._subtitleEnabled ? "showing" : "hidden";
+        this._subtitleTrackListener?.();
+        return true;
+      }
+    }
+    return false;
+  }
+
+  private _resolveNativeSubtitleTrack(
+    video: HTMLVideoElement,
+    generation: number,
+  ): void {
+    const found = this._tryResolveTrackFromList(video.textTracks);
+    if (found) return;
+    // Safari race: textTracks not yet populated — listen for addtrack
+    const onAddTrack = () => {
+      if (this.isGenerationStale(generation)) return;
+      const resolved = this._tryResolveTrackFromList(video.textTracks);
+      if (resolved) {
+        cleanup();
+      }
+    };
+    const cleanup = () =>
+      video.textTracks.removeEventListener("addtrack", onAddTrack);
+    video.textTracks.addEventListener("addtrack", onAddTrack);
+    this.cleanupFns.push(cleanup);
+  }
+
   async initialize(video: HTMLVideoElement, manifestUrl: string): Promise<void> {
+    // Reset subtitle availability and notify component before destroying prior instance
+    this._englishTrackIndex = null;
+    this._englishTextTrack = null;
+    this._hasSubtitleTrack = false;
+    this._subtitleTrackListener?.();
     await this.destroy();
     const generation = this.incrementGeneration();
     this.readinessStage = "ATTACHING";
@@ -267,6 +344,9 @@ export class HlsPlaybackAdapter {
         this.readinessStage = "METADATA";
       }
       this.tryMarkReady();
+      if (this.nativeHls) {
+        this._resolveNativeSubtitleTrack(video, generation);
+      }
     });
     this.addVideoListener(video, "canplay", generation, () => {
       this.buffering = false;
@@ -411,6 +491,21 @@ export class HlsPlaybackAdapter {
       }
     });
 
+    hls.on(Hls.Events.SUBTITLE_TRACKS_UPDATED, (_event, data) => {
+      if (this.isGenerationStale(generation)) {
+        return;
+      }
+      const track = data.subtitleTracks.find(
+        (t) => t.lang === "en" || t.name?.toLowerCase().includes("english"),
+      );
+      if (!track) return;
+      this._englishTrackIndex = track.id;
+      this._hasSubtitleTrack = true;
+      hls.subtitleTrack = track.id;
+      hls.subtitleDisplay = this._subtitleEnabled;
+      this._subtitleTrackListener?.();
+    });
+
     this.readinessStage = "MANIFEST_LOADING";
     hls.loadSource(manifestUrl);
     hls.attachMedia(video);
@@ -530,5 +625,9 @@ export class HlsPlaybackAdapter {
     this.pendingSeekSec = null;
     this.readyResolver = null;
     this.readyPromise = Promise.resolve();
+    this._englishTrackIndex = null;
+    this._englishTextTrack = null;
+    this._hasSubtitleTrack = false;
+    // _subtitleEnabled and _subtitleTrackListener survive destroy — component owns them
   }
 }

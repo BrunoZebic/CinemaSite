@@ -240,7 +240,7 @@ When escalating a feature’s testing level, this document **must be updated acc
 
 | Subsystem | Key Files | Current Level |
 |-----------|-----------|---------------|
-| HLS playback + coordinator | `components/Video/HlsSyncPlayer.tsx`, `lib/video/hlsAdapter.ts` | Level 5 |
+| HLS playback + coordinator + subtitle toggle | `components/Video/HlsSyncPlayer.tsx`, `lib/video/hlsAdapter.ts` | Level 5 |
 | Token lifecycle | `lib/video/bunnyToken.ts`, token refresh in HlsSyncPlayer | Level 5 |
 | Gesture priming + proof | `components/Video/HlsSyncPlayer.tsx` (gesture sections), `tests/hls/room-gesture-proof.ts` | Level 4 |
 | Room access + invite flow | `app/api/rooms/[room]/access/`, invite cookie logic | Level 3 |

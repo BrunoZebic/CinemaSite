@@ -157,6 +157,7 @@ type HlsE2EProbeState = {
   playAttemptStartAtMs: number | null;
   doubleStartSuspected: boolean;
   suppressedThenTappedSuspected: boolean;
+  hasSubtitleTrack: boolean;
 };
 
 declare global {
@@ -470,6 +471,8 @@ const HlsSyncPlayer = forwardRef<VideoSyncPlayerHandle, HlsSyncPlayerProps>(
 
     const [isPlayerReady, setIsPlayerReady] = useState(false);
     const [isPrimed, setIsPrimed] = useState(false);
+    const [subtitlesEnabled, setSubtitlesEnabled] = useState(true);
+    const [hasSubtitleTrack, setHasSubtitleTrack] = useState(false);
     const [, setStatusText] = useState("Loading stream...");
     const [isMuted, setIsMuted] = useState(false);
     const [volume, setVolume] = useState(1);
@@ -677,6 +680,7 @@ const HlsSyncPlayer = forwardRef<VideoSyncPlayerHandle, HlsSyncPlayerProps>(
             suppressedThenTappedSuspected: Boolean(
               nextDebugState.suppressedThenTappedSuspected,
             ),
+            hasSubtitleTrack: false, // patched by dedicated effect below
           };
         }
 
@@ -2590,6 +2594,9 @@ const HlsSyncPlayer = forwardRef<VideoSyncPlayerHandle, HlsSyncPlayerProps>(
       adapter.setFatalListener((error) => {
         void recoverFromPlaybackFailure(error);
       });
+      adapter.setSubtitleTrackListener(() => {
+        setHasSubtitleTrack(adapter.hasSubtitleTrack());
+      });
 
       const initialize = async () => {
         try {
@@ -3025,6 +3032,11 @@ const HlsSyncPlayer = forwardRef<VideoSyncPlayerHandle, HlsSyncPlayerProps>(
       }
     }, []);
 
+    const handleSubtitleToggle = useCallback(() => {
+      if (phase === "SILENCE") return;
+      setSubtitlesEnabled((prev) => !prev);
+    }, [phase]);
+
     const handleScrub = useCallback(
       async (nextTime: number) => {
         const adapter = adapterRef.current;
@@ -3202,6 +3214,27 @@ const HlsSyncPlayer = forwardRef<VideoSyncPlayerHandle, HlsSyncPlayerProps>(
       };
     }, [clearGestureOverlayTimers]);
 
+    // Suppress subtitles during SILENCE (captions render outside CSS stacking context)
+    useEffect(() => {
+      const adapter = adapterRef.current;
+      if (!adapter) return;
+      adapter.setSubtitleEnabled(phase === "SILENCE" ? false : subtitlesEnabled);
+    }, [phase, subtitlesEnabled]);
+
+    // Keep the E2E probe's hasSubtitleTrack field current as the adapter resolves the track
+    useEffect(() => {
+      if (typeof window !== "undefined" && window.__HLS_E2E_PROBE__) {
+        window.__HLS_E2E_PROBE__.hasSubtitleTrack = hasSubtitleTrack;
+      }
+    }, [hasSubtitleTrack]);
+
+    // Unmount-only: clear subtitle listener so adapter doesn't call into unmounted component
+    useEffect(() => {
+      return () => {
+        adapterRef.current?.setSubtitleTrackListener(null);
+      };
+    }, []);
+
     return (
       <div className="video-shell">
         <h2 className="video-heading">Screen</h2>
@@ -3301,6 +3334,17 @@ const HlsSyncPlayer = forwardRef<VideoSyncPlayerHandle, HlsSyncPlayerProps>(
               <button type="button" onClick={handleFullscreen}>
                 Fullscreen
               </button>
+              {hasSubtitleTrack && phase !== "SILENCE" ? (
+                <button
+                  type="button"
+                  className={`subtitle-toggle-btn${subtitlesEnabled ? " active" : ""}`}
+                  data-testid="subtitle-toggle"
+                  aria-pressed={subtitlesEnabled}
+                  onClick={handleSubtitleToggle}
+                >
+                  CC
+                </button>
+              ) : null}
             </div>
             {scrubEnabled ? (
               <label className="scrub-control">

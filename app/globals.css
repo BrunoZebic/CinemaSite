@@ -276,6 +276,16 @@ a {
   padding: 0.3rem 0.65rem;
 }
 
+.subtitle-toggle-btn {
+  opacity: 0.55;
+}
+
+.subtitle-toggle-btn.active {
+  opacity: 1;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
 .volume-control {
   display: inline-flex;
   align-items: center;
