@@ -113,12 +113,14 @@ Update `README.md`:
 ### Repo secrets
 
 - `CI_HLS_INVITE_CODE`
+- `CI_HLS_HOST_SECRET`
 - `CI_SUPABASE_SERVICE_ROLE_KEY`
 
 ### Workflow env passed to tests/scripts
 
 - `HLS_TEST_ROOM`
 - `HLS_TEST_INVITE_CODE`
+- `HLS_TEST_HOST_SECRET`
 - `HLS_TEST_BASE_URL`
 - `HLS_E2E_FAIL_ON_NON_PLAYABLE_ROOM=1`
 - `CI_SUPABASE_URL`

@@ -42,6 +42,7 @@ jobs:
       BASE_URL: ${{ github.event_name == 'deployment_status' && github.event.deployment_status.environment_url || inputs.base_url }}
       GIT_REF: ${{ github.event_name == 'deployment_status' && github.event.deployment.sha || inputs.git_ref }}
       HLS_TEST_INVITE_CODE: ${{ secrets.CI_HLS_INVITE_CODE }}
+      HLS_TEST_HOST_SECRET: ${{ secrets.CI_HLS_HOST_SECRET }}
       HLS_E2E_FAIL_ON_NON_PLAYABLE_ROOM: "1"
       CI_SUPABASE_URL: ${{ vars.CI_SUPABASE_URL }}
       CI_SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.CI_SUPABASE_SERVICE_ROLE_KEY }}

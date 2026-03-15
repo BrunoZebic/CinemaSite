@@ -157,6 +157,7 @@ Required GitHub repository variables:
 
 Required GitHub repository secrets:
 - `CI_HLS_INVITE_CODE`
+- `CI_HLS_HOST_SECRET` (reserved for future host/auth flows; safe to set now)
 - `CI_SUPABASE_SERVICE_ROLE_KEY`
 
 Dedicated CI room requirements:
