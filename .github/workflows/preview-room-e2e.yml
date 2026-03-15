@@ -1,0 +1,86 @@
+name: Preview Room E2E
+
+on:
+  deployment_status:
+  workflow_dispatch:
+    inputs:
+      base_url:
+        description: Preview deployment URL to test
+        required: true
+        type: string
+      git_ref:
+        description: Commit SHA or ref to check out
+        required: true
+        type: string
+      room:
+        description: Optional CI room override
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  chromium:
+    name: chromium
+    if: >-
+      ${{
+        github.event_name == 'workflow_dispatch' ||
+        (
+          github.event_name == 'deployment_status' &&
+          github.event.deployment_status.state == 'success' &&
+          github.event.deployment_status.environment_url &&
+          startsWith(github.event.deployment.environment, 'Preview')
+        )
+      }}
+    runs-on: ubuntu-latest
+    concurrency:
+      group: shared-room-e2e-${{ vars.CI_HLS_ROOM || 'default-room' }}
+      cancel-in-progress: false
+    env:
+      ROOM: ${{ github.event_name == 'workflow_dispatch' && inputs.room || vars.CI_HLS_ROOM }}
+      BASE_URL: ${{ github.event_name == 'deployment_status' && github.event.deployment_status.environment_url || inputs.base_url }}
+      GIT_REF: ${{ github.event_name == 'deployment_status' && github.event.deployment.sha || inputs.git_ref }}
+      HLS_TEST_INVITE_CODE: ${{ secrets.CI_HLS_INVITE_CODE }}
+      HLS_E2E_FAIL_ON_NON_PLAYABLE_ROOM: "1"
+      CI_SUPABASE_URL: ${{ vars.CI_SUPABASE_URL }}
+      CI_SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.CI_SUPABASE_SERVICE_ROLE_KEY }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ env.GIT_REF }}
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.30.3
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Install Playwright Chromium
+        run: pnpm exec playwright install --with-deps chromium
+
+      - name: Reset CI room
+        run: pnpm tsx scripts/hls/resetCiRoom.ts --room "$ROOM" --start-offset-sec -90
+
+      - name: Run room E2E
+        run: pnpm test:hls:room -- --room "$ROOM" --base-url "$BASE_URL" --project room-e2e-chromium
+
+      - name: Upload Playwright artifacts
+        if: ${{ failure() || cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: preview-room-e2e-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            test-results/**
+            playwright-report/**
+          if-no-files-found: ignore
+          retention-days: 14

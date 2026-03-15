@@ -13,7 +13,12 @@ export default defineConfig({
   testDir: ".",
   timeout: 60_000,
   outputDir: "test-results/playwright",
-  reporter: [["line"]],
+  reporter: [["line"], ["html", { open: "never", outputFolder: "playwright-report" }]],
+  use: {
+    trace: "retain-on-failure",
+    screenshot: "only-on-failure",
+    video: "retain-on-failure",
+  },
   projects: [
     {
       name: "hls-smoke",
@@ -38,7 +43,7 @@ export default defineConfig({
       },
     },
     {
-      name: "room-e2e",
+      name: "room-e2e-chromium",
       testMatch: ["tests/hls/room-playback.spec.ts"],
       fullyParallel: false,
       workers: 1,
@@ -49,6 +54,17 @@ export default defineConfig({
         launchOptions: {
           args: sharedChromiumArgs,
         },
+      },
+    },
+    {
+      name: "room-e2e-webkit",
+      testMatch: ["tests/hls/room-playback.spec.ts"],
+      fullyParallel: false,
+      workers: 1,
+      use: {
+        browserName: "webkit",
+        headless: true,
+        baseURL: ROOM_BASE_URL,
       },
     },
   ],

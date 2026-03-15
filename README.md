@@ -97,6 +97,7 @@ http://localhost:3000/premiere/demo
 - `pnpm test:hls:bunny -- --room demo`
 - `pnpm test:hls:guard -- --url "<signed-manifest-url>"`
 - `pnpm test:hls:room -- --base-url http://localhost:3100 --room demo --invite-code "<code>"`
+- `pnpm test:hls:room -- --base-url https://preview.example.vercel.app --room ci-room --invite-code "<code>" --project room-e2e-chromium`
 
 ## Week 4 HLS Self-Test Harness
 
@@ -121,6 +122,10 @@ Optional full room E2E:
 pnpm test:hls:room -- --base-url http://localhost:3100 --room demo --invite-code "..."
 ```
 
+Remote room E2E note:
+- `scripts/hls/runRoomE2E.ts` only starts a local `pnpm dev` server for `localhost` / `127.0.0.1` base URLs.
+- Vercel preview and production URLs run directly against the deployed app.
+
 Behavior highlights:
 - smoke server binds to `127.0.0.1` and browser origin is always `http://localhost:4173` (or `HLS_SMOKE_PORT`)
 - room E2E canonical origin is `http://localhost:3100` (or `HLS_TEST_BASE_URL`)
@@ -134,6 +139,39 @@ Recommended Bunny CORS dev snippet:
 - allow origins: `http://localhost:4173`, `http://localhost:3100`
 - allow methods: `GET, HEAD, OPTIONS`
 - allow request headers: `Range`
+
+## GitHub Actions CI
+
+This repo uses GitHub Actions for verification only. Vercel remains the only
+deployment system.
+
+Workflows:
+- `PR Quality`: runs `pnpm lint` and `pnpm build` on PRs to `main`
+- `Preview Room E2E`: runs Chromium room playback E2E after a successful Vercel preview deployment
+- `Nightly Room E2E`: runs WebKit room playback E2E on a nightly schedule against production
+
+Required GitHub repository variables:
+- `CI_HLS_ROOM`
+- `CI_HLS_PROD_BASE_URL`
+- `CI_SUPABASE_URL`
+
+Required GitHub repository secrets:
+- `CI_HLS_INVITE_CODE`
+- `CI_SUPABASE_SERVICE_ROLE_KEY`
+
+Dedicated CI room requirements:
+- create one active screening row reserved for CI
+- point `CI_HLS_ROOM` at that room slug
+- ensure the room uses a valid HLS manifest and invite code
+- the CI workflows reset only `premiere_start_unix_ms` before each run to force the room into `LIVE`
+
+Manual dispatch inputs:
+- Preview Room E2E requires `base_url` and `git_ref`, with optional `room`
+- Nightly Room E2E accepts optional `base_url`, `git_ref`, and `room`
+
+Artifact policy:
+- failing or cancelled room E2E workflows upload `test-results/**` and `playwright-report/**`
+- artifacts are retained for 14 days
 
 ## Rehearsal Debug Overlay
 

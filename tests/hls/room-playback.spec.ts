@@ -32,6 +32,7 @@ const STARTUP_PRE_GATE_TIMEOUT_MS = Number(
 const GESTURE_RACE_TIMEOUT_MS = Number(
   process.env.HLS_E2E_GESTURE_RACE_TIMEOUT_MS ?? 12_000,
 );
+const FAIL_ON_NON_PLAYABLE_ROOM = process.env.HLS_E2E_FAIL_ON_NON_PLAYABLE_ROOM === "1";
 const POST_GESTURE_PROOF_TIMEOUT_MS = Number(
   process.env.HLS_E2E_POST_GESTURE_PROOF_TIMEOUT_MS ?? 4_000,
 );
@@ -843,11 +844,14 @@ async function skipIfRoomNotPlayable(page: Page): Promise<void> {
     .getByText("Discussion phase is open.")
     .isVisible()
     .catch(() => false);
+  const roomNotPlayable = isClosed || isDiscussion;
+  const message = `Room "${ROOM}" is not in a playable phase (WAITING/LIVE required).`;
 
-  test.skip(
-    isClosed || isDiscussion,
-    `Room "${ROOM}" is not in a playable phase (WAITING/LIVE required).`,
-  );
+  if (roomNotPlayable && FAIL_ON_NON_PLAYABLE_ROOM) {
+    throw new Error(message);
+  }
+
+  test.skip(roomNotPlayable, message);
 }
 
 test.beforeEach(async ({ context }) => {
