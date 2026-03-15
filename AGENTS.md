@@ -123,7 +123,7 @@ you MUST run:
 - Security-only token enforcement checks:
   - `pnpm test:hls:guard -- --url "<signed-manifest-url>"`
 
-### 3.4 Do not “declare done” without test output
+### 3.5 Do not “declare done” without test output
 When finishing a task that requires tests, include in the final message:
 - which commands you ran
 - whether they passed
