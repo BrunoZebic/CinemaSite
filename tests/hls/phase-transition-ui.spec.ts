@@ -268,10 +268,7 @@ async function resolveWaitingBranch(page: Page): Promise<WaitingBranch> {
     )
     .not.toBe("pending");
 
-  if (
-    resolvedBranch !== "gesture_required" &&
-    resolvedBranch !== "gesture_not_required"
-  ) {
+  if (resolvedBranch === "pending" || resolvedBranch === "unexpected_phase") {
     throw new Error("WAITING branch selection failed because the room left WAITING early.");
   }
 

@@ -336,7 +336,12 @@ test("native — late addtrack resolution — empty at loadedmetadata, resolved 
 
   // Simulate Safari adding track later
   tracks.push({ language: "en", label: "English", mode: "disabled" });
-  addTrackCb?.();
+  const addTrackHandler: () => void =
+    addTrackCb ??
+    (() => {
+      throw new Error("Expected addTrack callback to be registered.");
+    });
+  addTrackHandler();
 
   assert.equal(sm.hasSubtitleTrack(), true);
   assert.equal(tracks[0].mode, "showing");
