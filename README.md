@@ -97,6 +97,7 @@ http://localhost:3000/premiere/demo
 - `pnpm test:hls:bunny -- --room demo`
 - `pnpm test:hls:guard -- --url "<signed-manifest-url>"`
 - `pnpm test:hls:room -- --base-url http://localhost:3100 --room demo --invite-code "<code>"`
+- `pnpm test:hls:phase -- --base-url http://localhost:3100 --room demo --project room-e2e-chromium`
 - `pnpm test:hls:room -- --base-url https://preview.example.vercel.app --room ci-room --invite-code "<code>" --project room-e2e-chromium`
 
 ## Week 4 HLS Self-Test Harness
@@ -147,8 +148,8 @@ deployment system.
 
 Workflows:
 - `PR Quality`: runs `pnpm lint` and `pnpm build` on PRs to `main`
-- `Preview Room E2E`: runs Chromium room playback E2E after a successful Vercel preview deployment
-- `Nightly Room E2E`: runs WebKit room playback E2E on a nightly schedule against production
+- `Preview Room E2E`: runs Chromium room playback plus phase-transition UI E2E after a successful Vercel preview deployment
+- `Nightly Room E2E`: runs WebKit room playback plus phase-transition UI E2E on a nightly schedule against production
 
 Required GitHub repository variables:
 - `CI_HLS_ROOM`
@@ -164,7 +165,7 @@ Dedicated CI room requirements:
 - create one active screening row reserved for CI
 - point `CI_HLS_ROOM` at that room slug
 - ensure the room uses a valid HLS manifest and invite code
-- the CI workflows reset only `premiere_start_unix_ms` before each run to force the room into `LIVE`
+- the CI workflows reset `premiere_start_unix_ms` before each job to force the room into `LIVE` for playback verification; the phase suite then applies its own deterministic offsets internally
 
 Manual dispatch inputs:
 - Preview Room E2E requires `base_url` and `git_ref`, with optional `room`

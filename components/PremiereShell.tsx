@@ -190,9 +190,19 @@ export default function PremiereShell({ room, initialBootstrap }: PremiereShellP
         <div className="premiere-meta">
           {screening ? (
             <>
-              <span className={`state-badge ${stateClassName(phase)}`}>{phase}</span>
+              <span
+                className={`state-badge ${stateClassName(phase)}`}
+                data-testid="phase-badge"
+                data-phase={phase}
+              >
+                {phase}
+              </span>
               {countdownTarget && countdownLabel ? (
-                <Countdown targetUnixMs={countdownTarget} label={countdownLabel} />
+                <Countdown
+                  targetUnixMs={countdownTarget}
+                  label={countdownLabel}
+                  testId="phase-countdown"
+                />
               ) : null}
               <p className="premiere-time">
                 Starts:{" "}

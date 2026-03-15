@@ -13,6 +13,7 @@
     "test:hls:bunny": "tsx scripts/hls/runSmoke.ts",
     "test:hls:guard": "tsx scripts/hls/assertTokenEnforcement.ts",
     "test:hls:room": "tsx scripts/hls/runRoomE2E.ts",
+    "test:hls:phase": "tsx scripts/hls/runRoomE2E.ts --spec tests/hls/phase-transition-ui.spec.ts",
     "test:hls:print-url": "tsx scripts/hls/printSignedUrl.ts",
     "playwright:install": "playwright install chromium"
   },

@@ -6,6 +6,7 @@ import { useMounted } from "@/lib/useMounted";
 type CountdownProps = {
   targetUnixMs: number;
   label?: string;
+  testId?: string;
 };
 
 function getRemainingMs(targetUnixMs: number): number {
@@ -26,7 +27,7 @@ function formatRemaining(remainingMs: number): string {
   return `${padded(days)}d ${padded(hours)}h ${padded(minutes)}m ${padded(seconds)}s`;
 }
 
-export default function Countdown({ targetUnixMs, label }: CountdownProps) {
+export default function Countdown({ targetUnixMs, label, testId }: CountdownProps) {
   const mounted = useMounted();
   const [remainingMs, setRemainingMs] = useState(0);
 
@@ -53,7 +54,12 @@ export default function Countdown({ targetUnixMs, label }: CountdownProps) {
   }, [mounted, remainingMs]);
 
   return (
-    <div className="countdown" aria-live="polite">
+    <div
+      className="countdown"
+      aria-live="polite"
+      data-testid={testId}
+      data-countdown-label={label ?? undefined}
+    >
       {label ? <span className="countdown-label">{label}</span> : null}
       <span className="countdown-time">{formatted}</span>
     </div>

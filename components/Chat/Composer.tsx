@@ -64,6 +64,7 @@ export default function Composer({
   return (
     <form className="composer" onSubmit={handleSubmit}>
       <textarea
+        data-testid="chat-composer-input"
         className="composer-input"
         maxLength={maxChars + 40}
         placeholder="Speak to the room..."

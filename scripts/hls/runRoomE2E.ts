@@ -44,6 +44,11 @@ async function main(): Promise<void> {
     process.env.HLS_TEST_PROJECT?.trim() ??
     process.env.HLS_E2E_PROJECT?.trim() ??
     "room-e2e-chromium";
+  const spec =
+    getStringFlag(args.flags, "spec") ??
+    process.env.HLS_TEST_SPEC?.trim() ??
+    process.env.HLS_E2E_SPEC?.trim() ??
+    "tests/hls/room-playback.spec.ts";
 
   if (!inviteCode) {
     throw new Error("Missing HLS_TEST_INVITE_CODE.");
@@ -56,10 +61,12 @@ async function main(): Promise<void> {
     HLS_TEST_BASE_URL: baseUrl,
     HLS_TEST_INVITE_CODE: inviteCode,
     HLS_TEST_PROJECT: project,
+    HLS_TEST_SPEC: spec,
     HLS_E2E_ROOM: room,
     HLS_E2E_BASE_URL: baseUrl,
     HLS_E2E_INVITE_CODE: inviteCode,
     HLS_E2E_PROJECT: project,
+    HLS_E2E_SPEC: spec,
   };
 
   const playwrightCli = path.resolve(
@@ -69,7 +76,7 @@ async function main(): Promise<void> {
   const argsList = [
     playwrightCli,
     "test",
-    "tests/hls/room-playback.spec.ts",
+    spec,
     `--project=${project}`,
   ];
 

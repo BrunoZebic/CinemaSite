@@ -337,8 +337,11 @@ const VideoSyncPlayer = forwardRef<VideoSyncPlayerHandle, VideoSyncPlayerProps>(
         ) : showPlayer ? (
           <div className="video-frame video-player-frame">
             <div className="video-player-host" ref={hostRef} />
+            {phase === "WAITING" ? (
+              <div data-testid="waiting-lobby-overlay" hidden />
+            ) : null}
             {phase === "SILENCE" ? (
-              <div className="video-blackout">
+              <div className="video-blackout" data-testid="silence-blackout">
                 <p>Silence</p>
               </div>
             ) : null}

@@ -557,7 +557,12 @@ export default function ChatPanel({
   }
 
   return (
-    <section className="chat-panel">
+    <section
+      className="chat-panel"
+      data-testid="chat-panel"
+      data-chat-open={String(chatOpen)}
+      data-chat-phase={phase}
+    >
       <div className="chat-topline">
         <div className="identity-pill">
           <span className="identity-dot" aria-hidden />

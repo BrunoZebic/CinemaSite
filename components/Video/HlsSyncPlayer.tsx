@@ -3260,7 +3260,7 @@ const HlsSyncPlayer = forwardRef<VideoSyncPlayerHandle, HlsSyncPlayerProps>(
               preload="auto"
             />
             {showSilenceBlackout ? (
-              <div className="video-blackout">
+              <div className="video-blackout" data-testid="silence-blackout">
                 <p>Silence</p>
               </div>
             ) : null}
@@ -3297,7 +3297,7 @@ const HlsSyncPlayer = forwardRef<VideoSyncPlayerHandle, HlsSyncPlayerProps>(
               </div>
             ) : null}
             {showWaitingLobbyOverlay ? (
-              <div className="video-waiting-lobby">
+              <div className="video-waiting-lobby" data-testid="waiting-lobby-overlay">
                 <p className="video-waiting-title">Waiting...</p>
                 <p className="video-waiting-copy">Starts soon</p>
               </div>

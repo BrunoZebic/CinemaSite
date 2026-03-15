@@ -39,6 +39,10 @@ When a PLAN_WEEK_* exists, implementation must:
 - Preserve invariants and precedence rules
 - Keep acceptance criteria intact
 
+After implementing an approved plan and running the mandatory validation gates,
+create or switch to a dedicated task branch, commit the work, and push that
+branch immediately unless the user explicitly asks not to.
+
 ### 1.2 Change boundaries
 Do not “improve” unrelated code while implementing a plan.
 Small refactors are allowed only if they:
@@ -104,7 +108,16 @@ you MUST run:
 If you touched invite/gesture UI or room flow, ALSO run:
 - `pnpm test:hls:room -- --base-url http://localhost:3100 --room demo --invite-code "<code>"`
 
-### 3.3 Debugging / targeted runs
+### 3.3 Phase-transition-related changes (required gate)
+If you touched ANY of:
+- `lib/premiere/phase.ts`
+- `components/PremiereShell.tsx`
+- phase-gated UI in `components/Video/`
+- phase-gated chat UI in `components/Chat/`
+you MUST run:
+- `pnpm test:hls:phase -- --base-url http://localhost:3100 --room demo --project room-e2e-chromium`
+
+### 3.4 Debugging / targeted runs
 - Validate a specific manifest:
   - `pnpm test:hls:url -- --url "<manifest-url>"`
 - Security-only token enforcement checks:
@@ -250,7 +263,7 @@ When escalating a feature’s testing level, this document **must be updated acc
 | Token lifecycle | `lib/video/bunnyToken.ts`, token refresh in HlsSyncPlayer | Level 5 |
 | Gesture priming + proof | `components/Video/HlsSyncPlayer.tsx` (gesture sections), `tests/hls/room-gesture-proof.ts` | Level 4 |
 | Room access + invite flow | `app/api/rooms/[room]/access/`, invite cookie logic | Level 3 |
-| Phase state machine | `lib/premiere/phase.ts`, `components/PremiereShell.tsx` | Level 3 |
+| Phase transition UI + SILENCE precedence | `lib/premiere/phase.ts`, `components/PremiereShell.tsx`, `components/Video/HlsSyncPlayer.tsx`, `components/Chat/ChatPanel.tsx` | Level 4 |
 | Chat | `lib/chat/`, `components/Chat/` | Level 2 |
 | Engine selection | `lib/video/hlsEngineSelection.ts` | Level 2 |
 

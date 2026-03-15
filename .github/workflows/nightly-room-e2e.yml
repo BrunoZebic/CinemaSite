@@ -66,6 +66,9 @@ jobs:
       - name: Run room E2E
         run: pnpm test:hls:room -- --room "$ROOM" --base-url "$BASE_URL" --project room-e2e-webkit
 
+      - name: Run phase E2E
+        run: pnpm test:hls:phase -- --room "$ROOM" --base-url "$BASE_URL" --project room-e2e-webkit
+
       - name: Upload Playwright artifacts
         if: ${{ failure() || cancelled() }}
         uses: actions/upload-artifact@v4
