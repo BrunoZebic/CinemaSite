@@ -27,6 +27,12 @@ Most work follows:
 3) Revise Plan until no major notes
 4) Implement exactly the plan
 
+Every new implementation task must produce a tracked repo plan file before
+implementation begins. Use a `PLAN_*` filename that clearly matches the task.
+If the work evolves materially, update the same plan file (or replace it with a
+newer one) so the repo always contains the decision record that implementation
+followed.
+
 When a PLAN_WEEK_* exists, implementation must:
 - Match locked decisions
 - Respect scope/non-goals
