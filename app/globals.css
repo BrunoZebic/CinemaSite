@@ -13,7 +13,7 @@
   --danger: #f08b7a;
   --ok: #7adbb2;
   --shadow-lg: 0 24px 48px rgba(2, 4, 9, 0.45);
-  --ritual-fade-duration: 350ms;
+  --ritual-fade-duration: 650ms;
 }
 
 * {
@@ -404,7 +404,7 @@ a {
   background: #000;
   opacity: 0;
   pointer-events: none;
-  transition: opacity var(--ritual-fade-duration) ease;
+  animation-fill-mode: both;
 }
 
 .premiere-page[data-transition-kind="to-live"] .video-transition-overlay {
@@ -412,15 +412,16 @@ a {
 }
 
 .premiere-page[data-transition-kind="to-silence"] .video-transition-overlay {
-  opacity: 1;
+  animation: ritual-fade-to-black var(--ritual-fade-duration) ease both;
 }
 
-.premiere-page[data-transition-kind="to-discussion"] .video-transition-overlay {
-  opacity: 0.18;
-}
-
+.premiere-page[data-transition-kind="to-discussion"] .video-transition-overlay,
 .premiere-page[data-transition-kind="to-closed"] .video-transition-overlay {
-  opacity: 0.14;
+  animation: ritual-black-reveal var(--ritual-fade-duration) ease both;
+}
+
+.premiere-page[data-transition-kind="to-silence"] .video-blackout {
+  animation: ritual-blackout-in var(--ritual-fade-duration) ease both;
 }
 
 .video-controls {
@@ -440,39 +441,87 @@ a {
   transition:
     opacity var(--ritual-fade-duration) ease,
     transform var(--ritual-fade-duration) ease,
-    background var(--ritual-fade-duration) ease;
+    background var(--ritual-fade-duration) ease,
+    border-color var(--ritual-fade-duration) ease;
 }
 
-.video-controls button {
+.video-presentation-shell[data-player-chrome-visible="false"] .video-controls,
+.video-presentation-shell[data-player-chrome-visible="false"] .scrub-control {
+  opacity: 0;
+  transform: translateY(12px);
+  pointer-events: none;
+}
+
+.video-presentation-shell[data-player-chrome-visible="true"] .video-controls,
+.video-presentation-shell[data-player-chrome-visible="true"] .scrub-control {
+  opacity: 1;
+  transform: translateY(0);
+  pointer-events: auto;
+}
+
+.player-icon-button {
+  width: 2.5rem;
+  height: 2.5rem;
   border: 1px solid var(--border);
   border-radius: 999px;
-  background: rgba(255, 255, 255, 0.03);
+  background: rgba(255, 255, 255, 0.04);
   color: var(--text-main);
-  font: inherit;
   cursor: pointer;
-  padding: 0.3rem 0.65rem;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  transition:
+    transform 180ms ease,
+    background 180ms ease,
+    border-color 180ms ease,
+    color 180ms ease;
+}
+
+.player-icon-button:hover,
+.player-icon-button:focus-visible,
+.chat-toggle:hover,
+.chat-toggle:focus-visible,
+.chat-close-btn:hover,
+.chat-close-btn:focus-visible {
+  background: rgba(242, 189, 88, 0.14);
+  border-color: rgba(242, 189, 88, 0.5);
+  color: #fff4d4;
+}
+
+.player-icon-button:focus-visible,
+.chat-toggle:focus-visible,
+.chat-close-btn:focus-visible {
+  outline: 2px solid rgba(124, 216, 200, 0.5);
+  outline-offset: 2px;
+}
+
+.player-icon-button.is-active,
+.subtitle-toggle-btn.active,
+.chat-toggle[aria-expanded="true"] {
+  background: rgba(124, 216, 200, 0.14);
+  border-color: rgba(124, 216, 200, 0.44);
+  color: #dff9f4;
+}
+
+.ui-icon {
+  width: 1.15rem;
+  height: 1.15rem;
 }
 
 .subtitle-toggle-btn {
-  opacity: 0.55;
-}
-
-.subtitle-toggle-btn.active {
-  opacity: 1;
-  text-decoration: underline;
-  text-underline-offset: 2px;
+  opacity: 0.82;
 }
 
 .volume-control {
   display: inline-flex;
   align-items: center;
-  gap: 0.4rem;
-  font-size: 0.78rem;
-  color: var(--text-muted);
+  min-width: 92px;
+  padding: 0 0.15rem 0 0.05rem;
 }
 
 .volume-control input {
   width: 88px;
+  accent-color: var(--accent);
 }
 
 .scrub-control {
@@ -490,6 +539,10 @@ a {
   text-align: left;
   font-size: 0.76rem;
   color: var(--text-muted);
+  transition:
+    opacity var(--ritual-fade-duration) ease,
+    transform var(--ritual-fade-duration) ease,
+    background var(--ritual-fade-duration) ease;
 }
 
 .video-gesture-overlay {
@@ -674,11 +727,38 @@ a {
   0% {
     opacity: 0;
   }
-  46% {
+  38% {
+    opacity: 0.96;
+  }
+  100% {
+    opacity: 0;
+  }
+}
+
+@keyframes ritual-fade-to-black {
+  0% {
+    opacity: 0;
+  }
+  100% {
+    opacity: 1;
+  }
+}
+
+@keyframes ritual-black-reveal {
+  0% {
     opacity: 1;
   }
   100% {
     opacity: 0;
+  }
+}
+
+@keyframes ritual-blackout-in {
+  0% {
+    opacity: 0;
+  }
+  100% {
+    opacity: 1;
   }
 }
 
@@ -689,7 +769,9 @@ a {
   .video-transition-overlay,
   .chat-drawer,
   .video-controls,
-  .video-waiting-lobby {
+  .video-waiting-lobby,
+  .scrub-control,
+  .video-blackout {
     transition: none;
   }
 
@@ -700,6 +782,13 @@ a {
   }
 
   .premiere-page[data-transition-kind="to-live"] .video-transition-overlay {
+    animation: none;
+  }
+
+  .premiere-page[data-transition-kind="to-silence"] .video-blackout,
+  .premiere-page[data-transition-kind="to-silence"] .video-transition-overlay,
+  .premiere-page[data-transition-kind="to-discussion"] .video-transition-overlay,
+  .premiere-page[data-transition-kind="to-closed"] .video-transition-overlay {
     animation: none;
   }
 }
@@ -714,6 +803,7 @@ a {
   letter-spacing: 0.18em;
   text-transform: uppercase;
   z-index: 14;
+  opacity: 1;
 }
 
 .video-status-note {
@@ -825,8 +915,17 @@ a {
 }
 
 .chat-close-btn {
-  padding: 0.3rem 0.55rem;
-  font-size: 0.82rem;
+  width: 2.25rem;
+  height: 2.25rem;
+  padding: 0;
+  display: grid;
+  place-items: center;
+}
+
+.chat-toggle {
+  display: grid;
+  place-items: center;
+  padding: 0;
 }
 
 .chat-panel {
@@ -1211,6 +1310,7 @@ a {
   background: rgba(8, 13, 22, 0.9);
   z-index: 70;
   padding: 0.6rem 0.75rem;
+  pointer-events: none;
 }
 
 .sync-debug-title {
@@ -1315,11 +1415,11 @@ a {
     bottom: 1rem;
     right: 1rem;
     z-index: 32;
-    padding: 0.55rem 0.9rem;
+    width: 3.25rem;
+    height: 3.25rem;
     background: rgba(11, 17, 30, 0.92);
     border-color: rgba(242, 189, 88, 0.55);
     color: var(--accent);
-    font-weight: 700;
   }
 
   .video-controls {

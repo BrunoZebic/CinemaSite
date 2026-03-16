@@ -6,6 +6,17 @@
 - Preserve existing phase authority and playback semantics: no changes to `computePremierePhase()`, canonical time, drift correction, chat permission rules, or adapter contracts.
 - Add nullable per-screening poster support so `DISCUSSION` and `CLOSED` can resolve into a poster-backed presentation when configured.
 
+## Revision 2 - V1 Finish Adjustments
+- Replace text-labeled player chrome buttons with icon-led controls for mute, fullscreen, subtitles, and chat toggle while preserving existing `data-testid`, `aria-label`, and keyboard behavior.
+- Make player control chrome feel player-native:
+  - on fine-pointer devices, controls appear on pointer movement/hover over the player shell
+  - controls hide after roughly 3 seconds of inactivity
+  - keyboard focus and coarse-pointer/touch interaction must keep controls accessible
+- Soften phase presentation changes with fade-oriented transitions instead of abrupt visual swaps:
+  - retain the existing semantic attributes and precedence rules
+  - `SILENCE` blackout still wins
+  - no screenshot testing; extend existing state-based assertions only if selectors or behavior contracts change
+
 ## Data And Interfaces
 - Add `posterImageUrl?: string | null` to `ScreeningConfig` in `lib/premiere/types.ts`.
 - Add `poster_image_url` to the `screenings` table in both `supabase/schema.sql` and a new forward-only Supabase migration.

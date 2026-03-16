@@ -876,6 +876,7 @@ async function assertPlayerFullscreenToggle(
     return;
   }
 
+  await page.getByTestId("player-presentation-shell").hover();
   const fullscreenToggle = page.getByTestId("fullscreen-toggle");
   await expect(fullscreenToggle).toBeVisible({
     timeout: 10_000,
@@ -912,6 +913,7 @@ async function assertPlayerFullscreenToggle(
       )
       .toBe(true);
 
+    await page.getByTestId("player-presentation-shell").hover();
     await fullscreenToggle.click({
       timeout: 6_000,
     });
@@ -1149,16 +1151,12 @@ async function completeInviteFlowWithCode(page: Page, code: string): Promise<voi
 }
 
 async function skipIfSubtitleRoomNotPlayable(page: Page): Promise<void> {
-  const isClosed = await page
-    .getByText("Screening has closed.")
-    .isVisible()
-    .catch(() => false);
-  const isDiscussion = await page
-    .getByText("Discussion phase is open.")
-    .isVisible()
-    .catch(() => false);
+  const phase = await page
+    .getByTestId("phase-badge")
+    .getAttribute("data-phase")
+    .catch(() => null);
   test.skip(
-    isClosed || isDiscussion,
+    phase === "DISCUSSION" || phase === "CLOSED",
     `Subtitle room "${SUBTITLE_ROOM}" is not in a playable phase (WAITING/LIVE required).`,
   );
 }
@@ -1194,6 +1192,7 @@ test.describe("Subtitle Toggle", () => {
       .toBe(true);
 
     // CC button must be visible and default ON
+    await page.getByTestId("player-presentation-shell").hover();
     const ccButton = page.getByTestId("subtitle-toggle");
     await expect(ccButton).toBeVisible();
     await expect(ccButton).toHaveAttribute("aria-pressed", "true");

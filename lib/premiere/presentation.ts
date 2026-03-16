@@ -1,6 +1,6 @@
 import type { PremierePhase } from "@/lib/premiere/types";
 
-export const RITUAL_TRANSITION_DURATION_MS = 350;
+export const RITUAL_TRANSITION_DURATION_MS = 650;
 
 export type PhaseVisualState = "steady" | "transitioning";
 export type PhaseTransitionKind =

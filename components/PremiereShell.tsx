@@ -5,6 +5,10 @@ import InviteGateModal from "@/components/Access/InviteGateModal";
 import HostAuthInline from "@/components/Access/HostAuthInline";
 import ChatPanel from "@/components/Chat/ChatPanel";
 import Countdown from "@/components/Countdown";
+import {
+  ChatBubbleIcon,
+  CloseIcon,
+} from "@/components/PremiereControlIcons";
 import HlsSyncPlayer from "@/components/Video/HlsSyncPlayer";
 import VideoSyncPlayer from "@/components/Video/VideoSyncPlayer";
 import type {
@@ -304,9 +308,10 @@ export default function PremiereShell({ room, initialBootstrap }: PremiereShellP
             <button
               className="chat-close-btn"
               type="button"
+              aria-label="Close chat"
               onClick={() => setMobileChatOpen(false)}
             >
-              Close
+              <CloseIcon className="ui-icon" />
             </button>
           </div>
           <ChatPanel
@@ -339,9 +344,12 @@ export default function PremiereShell({ room, initialBootstrap }: PremiereShellP
         <button
           className="chat-toggle"
           type="button"
+          data-testid="chat-toggle"
+          aria-label={mobileChatOpen ? "Close chat" : "Open chat"}
+          aria-expanded={mobileChatOpen}
           onClick={() => setMobileChatOpen((current) => !current)}
         >
-          Chat
+          <ChatBubbleIcon className="ui-icon" />
         </button>
       ) : null}
 
