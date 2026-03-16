@@ -28,6 +28,12 @@
 - Keep the desktop hover/autohide runtime behavior, but harden the room E2E fullscreen helper so CI proves chrome visibility using a fresh pointer transition instead of assuming a single `.hover()` will always retrigger reveal state.
 - Swap the mute button accent polarity so the button reads active when audio is on and inactive when muted, without changing labels, semantics, or mute behavior.
 
+## Revision 5 - Right-Aligned Utility Controls
+- Keep the current icon set and hover/autohide behavior, but move the utility controls to the right edge of the player chrome:
+  - captions sits slightly left of fullscreen
+  - fullscreen remains the rightmost control
+- Scope is presentation/layout only; no semantics, labels, test IDs, or playback behavior change.
+
 ## Data And Interfaces
 - Add `posterImageUrl?: string | null` to `ScreeningConfig` in `lib/premiere/types.ts`.
 - Add `poster_image_url` to the `screenings` table in both `supabase/schema.sql` and a new forward-only Supabase migration.

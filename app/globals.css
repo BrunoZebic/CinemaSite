@@ -448,6 +448,14 @@ a {
     visibility 0s linear var(--ritual-fade-duration);
 }
 
+.video-controls-actions-right {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-left: auto;
+  min-width: max-content;
+}
+
 .video-presentation-shell[data-player-chrome-visible="false"] .video-controls,
 .video-presentation-shell[data-player-chrome-visible="false"] .scrub-control {
   opacity: 0;

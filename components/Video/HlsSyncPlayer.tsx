@@ -3684,41 +3684,43 @@ const HlsSyncPlayer = forwardRef<VideoSyncPlayerHandle, HlsSyncPlayerProps>(
                     }}
                   />
                 </label>
-                <button
-                  type="button"
-                  className="player-icon-button"
-                  data-testid="fullscreen-toggle"
-                  aria-label={isPresentationFullscreen ? "Exit fullscreen" : "Enter fullscreen"}
-                  title={isPresentationFullscreen ? "Exit fullscreen" : "Enter fullscreen"}
-                  onClick={() => {
-                    revealPlayerChrome();
-                    handleFullscreen();
-                  }}
-                >
-                  {isPresentationFullscreen ? (
-                    <FullscreenExitIcon className="ui-icon" />
-                  ) : (
-                    <FullscreenEnterIcon className="ui-icon" />
-                  )}
-                </button>
-                {hasSubtitleTrack && phase !== "SILENCE" ? (
+                <div className="video-controls-actions-right">
+                  {hasSubtitleTrack && phase !== "SILENCE" ? (
+                    <button
+                      type="button"
+                      className={`player-icon-button subtitle-toggle-btn${
+                        subtitlesEnabled ? " active" : ""
+                      }`}
+                      data-testid="subtitle-toggle"
+                      aria-label={subtitlesEnabled ? "Disable captions" : "Enable captions"}
+                      aria-pressed={subtitlesEnabled}
+                      title={subtitlesEnabled ? "Disable captions" : "Enable captions"}
+                      onClick={() => {
+                        revealPlayerChrome();
+                        handleSubtitleToggle();
+                      }}
+                    >
+                      <ClosedCaptionsIcon className="ui-icon" />
+                    </button>
+                  ) : null}
                   <button
                     type="button"
-                    className={`player-icon-button subtitle-toggle-btn${
-                      subtitlesEnabled ? " active" : ""
-                    }`}
-                    data-testid="subtitle-toggle"
-                    aria-label={subtitlesEnabled ? "Disable captions" : "Enable captions"}
-                    aria-pressed={subtitlesEnabled}
-                    title={subtitlesEnabled ? "Disable captions" : "Enable captions"}
+                    className="player-icon-button"
+                    data-testid="fullscreen-toggle"
+                    aria-label={isPresentationFullscreen ? "Exit fullscreen" : "Enter fullscreen"}
+                    title={isPresentationFullscreen ? "Exit fullscreen" : "Enter fullscreen"}
                     onClick={() => {
                       revealPlayerChrome();
-                      handleSubtitleToggle();
+                      handleFullscreen();
                     }}
                   >
-                    <ClosedCaptionsIcon className="ui-icon" />
+                    {isPresentationFullscreen ? (
+                      <FullscreenExitIcon className="ui-icon" />
+                    ) : (
+                      <FullscreenEnterIcon className="ui-icon" />
+                    )}
                   </button>
-                ) : null}
+                </div>
               </div>
             ) : null}
             {showPlayerChrome && scrubEnabled ? (
