@@ -26,6 +26,7 @@ import {
   saveIdentity,
   type Identity,
 } from "@/lib/identity";
+import type { ChatVisualState } from "@/lib/premiere/presentation";
 import type { PremierePhase } from "@/lib/premiere/types";
 import { hasSupabaseConfig } from "@/lib/supabaseClient";
 import { useMounted } from "@/lib/useMounted";
@@ -38,6 +39,7 @@ type ChatPanelProps = {
   hasAccess: boolean;
   isHost: boolean;
   chatOpen: boolean;
+  visualState: ChatVisualState;
   phase: PremierePhase;
   slowModeSeconds: number;
   maxMessageChars: number;
@@ -96,6 +98,7 @@ export default function ChatPanel({
   hasAccess,
   isHost,
   chatOpen,
+  visualState,
   phase,
   slowModeSeconds,
   maxMessageChars,
@@ -562,6 +565,7 @@ export default function ChatPanel({
       data-testid="chat-panel"
       data-chat-open={String(chatOpen)}
       data-chat-phase={phase}
+      data-chat-visual-state={visualState}
     >
       <div className="chat-topline">
         <div className="identity-pill">

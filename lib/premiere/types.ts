@@ -19,6 +19,7 @@ export interface ScreeningConfig {
   maxMessageChars: number;
   videoProvider: VideoProvider;
   videoAssetId: string;
+  posterImageUrl?: string | null;
   videoManifestPath?: string | null;
   videoManifestUrl?: string | null;
   inviteCodeHash?: string | null;

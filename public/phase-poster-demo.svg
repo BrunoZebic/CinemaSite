@@ -1,0 +1,42 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 1800" role="img" aria-labelledby="title desc">
+  <title id="title">Cinema poster fixture</title>
+  <desc id="desc">A warm-toned screening poster used for deterministic ritual phase tests.</desc>
+  <defs>
+    <linearGradient id="bg" x1="0%" x2="100%" y1="0%" y2="100%">
+      <stop offset="0%" stop-color="#101722" />
+      <stop offset="46%" stop-color="#1f2c40" />
+      <stop offset="100%" stop-color="#090d14" />
+    </linearGradient>
+    <radialGradient id="glow" cx="50%" cy="28%" r="62%">
+      <stop offset="0%" stop-color="#f2bd58" stop-opacity="0.72" />
+      <stop offset="45%" stop-color="#f08b7a" stop-opacity="0.22" />
+      <stop offset="100%" stop-color="#000000" stop-opacity="0" />
+    </radialGradient>
+  </defs>
+  <rect width="1200" height="1800" fill="url(#bg)" />
+  <rect width="1200" height="1800" fill="url(#glow)" />
+  <g fill="none" stroke="#f2efe8" stroke-opacity="0.14">
+    <path d="M138 1650C288 1460 458 1364 664 1298C852 1238 1006 1126 1098 930" stroke-width="3" />
+    <path d="M106 1556C226 1418 356 1330 512 1264C730 1170 948 1036 1070 780" stroke-width="2" />
+  </g>
+  <g transform="translate(130 154)">
+    <text x="0" y="0" fill="#aab6cf" font-family="Georgia, serif" font-size="40" letter-spacing="12">PREMIERE ROOM</text>
+    <text x="0" y="220" fill="#f2efe8" font-family="Georgia, serif" font-size="154" font-weight="700">THE</text>
+    <text x="0" y="390" fill="#f2efe8" font-family="Georgia, serif" font-size="154" font-weight="700">QUIET</text>
+    <text x="0" y="560" fill="#f2efe8" font-family="Georgia, serif" font-size="154" font-weight="700">FRAME</text>
+    <text x="0" y="670" fill="#7cd8c8" font-family="Arial, sans-serif" font-size="42" letter-spacing="14">A SHARED SCREENING RITUAL</text>
+  </g>
+  <g transform="translate(130 972)">
+    <rect width="940" height="500" rx="28" fill="#0d1421" fill-opacity="0.34" stroke="#f2bd58" stroke-opacity="0.3" />
+    <circle cx="470" cy="170" r="108" fill="#f2bd58" fill-opacity="0.18" />
+    <circle cx="470" cy="170" r="62" fill="#f2bd58" fill-opacity="0.26" />
+    <path d="M434 110L534 170L434 230Z" fill="#f2efe8" fill-opacity="0.9" />
+    <text x="68" y="338" fill="#f2efe8" font-family="Arial, sans-serif" font-size="42" letter-spacing="8">STILLNESS. LIGHT. CONVERSATION.</text>
+    <text x="68" y="404" fill="#aab6cf" font-family="Arial, sans-serif" font-size="32">
+      Discussion and archive-state fixture for Week 4.5 phase presentation tests.
+    </text>
+  </g>
+  <text x="130" y="1690" fill="#f2efe8" fill-opacity="0.72" font-family="Arial, sans-serif" font-size="34" letter-spacing="10">
+    LOCAL POSTER FIXTURE
+  </text>
+</svg>

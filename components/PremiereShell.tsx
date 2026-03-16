@@ -16,6 +16,14 @@ import {
   getPhaseEndsAtUnixMs,
   isChatOpenForPhase,
 } from "@/lib/premiere/phase";
+import {
+  badgeClassNameForPhase,
+  chatVisualStateForPhase,
+  RITUAL_TRANSITION_DURATION_MS,
+  transitionKindForPhases,
+  type PhaseTransitionKind,
+  type PhaseVisualState,
+} from "@/lib/premiere/presentation";
 import type { PremierePhase, RoomBootstrap } from "@/lib/premiere/types";
 import { formatUnixDateTime } from "@/lib/premiereConfig";
 import type { ChannelHealthStatus } from "@/lib/chat/realtime";
@@ -27,18 +35,6 @@ type PremiereShellProps = {
 };
 
 const syncDebugEnabled = process.env.NEXT_PUBLIC_SYNC_DEBUG === "true";
-
-function stateClassName(state: PremierePhase): string {
-  if (state === "WAITING") {
-    return "state-waiting";
-  }
-
-  if (state === "LIVE" || state === "DISCUSSION") {
-    return "state-live";
-  }
-
-  return "state-ended";
-}
 
 function countdownLabelForPhase(phase: PremierePhase): string | null {
   if (phase === "WAITING") {
@@ -66,11 +62,16 @@ export default function PremiereShell({ room, initialBootstrap }: PremiereShellP
   );
   const [clockMs, setClockMs] = useState(() => Date.now());
   const [mobileChatOpen, setMobileChatOpen] = useState(false);
+  const [phaseVisualState, setPhaseVisualState] =
+    useState<PhaseVisualState>("steady");
+  const [transitionKind, setTransitionKind] =
+    useState<PhaseTransitionKind>("none");
   const [syncDebugState, setSyncDebugState] = useState<VideoSyncDebugState | null>(
     null,
   );
   const [channelStatus, setChannelStatus] =
     useState<ChannelHealthStatus>("DISCONNECTED");
+  const previousPhaseRef = useRef<PremierePhase>(initialBootstrap.phase);
 
   const screening = bootstrap.screening;
   const phase = useMemo<PremierePhase>(() => {
@@ -83,6 +84,7 @@ export default function PremiereShell({ room, initialBootstrap }: PremiereShellP
   const hasAccess = bootstrap.hasAccess;
   const isHost = bootstrap.isHost;
   const chatOpen = Boolean(screening && hasAccess && isChatOpenForPhase(phase));
+  const chatVisualState = chatVisualStateForPhase(phase);
   const useHlsPlayer = screening?.videoProvider === "hls";
 
   const refreshBootstrap = useCallback(async (): Promise<RoomBootstrap | null> => {
@@ -175,12 +177,47 @@ export default function PremiereShell({ room, initialBootstrap }: PremiereShellP
     return () => window.clearInterval(timer);
   }, [mounted, refreshServerTime]);
 
+  useEffect(() => {
+    const previousPhase = previousPhaseRef.current;
+    if (previousPhase === phase) {
+      return;
+    }
+
+    previousPhaseRef.current = phase;
+    const nextTransitionKind = transitionKindForPhases(previousPhase, phase);
+    if (nextTransitionKind === "none") {
+      setTransitionKind("none");
+      setPhaseVisualState("steady");
+      return;
+    }
+
+    setTransitionKind(nextTransitionKind);
+    setPhaseVisualState("transitioning");
+    const timer = window.setTimeout(() => {
+      setTransitionKind("none");
+      setPhaseVisualState("steady");
+    }, RITUAL_TRANSITION_DURATION_MS);
+    return () => window.clearTimeout(timer);
+  }, [phase]);
+
+  useEffect(() => {
+    if (chatVisualState === "hidden") {
+      setMobileChatOpen(false);
+    }
+  }, [chatVisualState]);
+
   const roomTitle = screening ? screening.title : `Room "${room}" not scheduled`;
   const countdownTarget = screening ? getPhaseEndsAtUnixMs(phase, screening) : null;
   const countdownLabel = countdownLabelForPhase(phase);
 
   return (
-    <div className="premiere-page">
+    <div
+      className="premiere-page"
+      data-testid="premiere-shell"
+      data-phase={phase}
+      data-phase-visual-state={phaseVisualState}
+      data-transition-kind={transitionKind}
+    >
       <header className="premiere-header slide-in">
         <div>
           <p className="premiere-eyebrow">Live Cinema Premiere Room</p>
@@ -191,7 +228,7 @@ export default function PremiereShell({ room, initialBootstrap }: PremiereShellP
           {screening ? (
             <>
               <span
-                className={`state-badge ${stateClassName(phase)}`}
+                className={`state-badge ${badgeClassNameForPhase(phase)}`}
                 data-testid="phase-badge"
                 data-phase={phase}
               >
@@ -257,7 +294,11 @@ export default function PremiereShell({ room, initialBootstrap }: PremiereShellP
           )}
         </section>
 
-        <aside className={`chat-drawer ${mobileChatOpen ? "open" : ""}`}>
+        <aside
+          className={`chat-drawer ${mobileChatOpen ? "open" : ""}`}
+          data-chat-visual-state={chatVisualState}
+          data-chat-open={String(chatOpen)}
+        >
           <div className="chat-drawer-head">
             <h3 className="chat-drawer-title">Audience Chat</h3>
             <button
@@ -275,6 +316,7 @@ export default function PremiereShell({ room, initialBootstrap }: PremiereShellP
             hasAccess={hasAccess}
             isHost={isHost}
             chatOpen={chatOpen}
+            visualState={chatVisualState}
             phase={phase}
             slowModeSeconds={screening?.slowModeSeconds ?? 60}
             maxMessageChars={screening?.maxMessageChars ?? 320}
@@ -284,7 +326,7 @@ export default function PremiereShell({ room, initialBootstrap }: PremiereShellP
         </aside>
       </div>
 
-      {mobileChatOpen ? (
+      {mobileChatOpen && chatVisualState !== "hidden" ? (
         <button
           className="chat-backdrop"
           type="button"
@@ -293,13 +335,15 @@ export default function PremiereShell({ room, initialBootstrap }: PremiereShellP
         />
       ) : null}
 
-      <button
-        className="chat-toggle"
-        type="button"
-        onClick={() => setMobileChatOpen((current) => !current)}
-      >
-        Chat
-      </button>
+      {chatVisualState !== "hidden" ? (
+        <button
+          className="chat-toggle"
+          type="button"
+          onClick={() => setMobileChatOpen((current) => !current)}
+        >
+          Chat
+        </button>
+      ) : null}
 
       <InviteGateModal
         open={mounted && Boolean(screening) && !hasAccess}

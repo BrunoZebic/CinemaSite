@@ -14,6 +14,7 @@ type FallbackConfig = {
   maxMessageChars: number;
   videoProvider: "vimeo" | "hls" | "none";
   videoAssetId: string;
+  posterImageUrl?: string | null;
 };
 
 const FALLBACK_CONFIGS: Record<string, FallbackConfig> = {
@@ -28,6 +29,7 @@ const FALLBACK_CONFIGS: Record<string, FallbackConfig> = {
     maxMessageChars: 320,
     videoProvider: "vimeo",
     videoAssetId: "",
+    posterImageUrl: "/phase-poster-demo.svg",
   },
   alt: {
     title: "Premiere #2 - Twilight Assembly",
@@ -40,6 +42,7 @@ const FALLBACK_CONFIGS: Record<string, FallbackConfig> = {
     maxMessageChars: 320,
     videoProvider: "vimeo",
     videoAssetId: "",
+    posterImageUrl: "/phase-poster-demo.svg",
   },
 };
 
@@ -62,6 +65,7 @@ export function getFallbackScreening(room: string): ScreeningConfig | null {
     maxMessageChars: source.maxMessageChars,
     videoProvider: source.videoProvider,
     videoAssetId: source.videoAssetId,
+    posterImageUrl: source.posterImageUrl ?? null,
   };
 }
 
