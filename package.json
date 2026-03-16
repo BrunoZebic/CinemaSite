@@ -7,7 +7,7 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
-    "test:hls:unit": "tsx --test tests/hls/unit/**/*.test.ts",
+    "test:hls:unit": "tsx --test tests/hls/unit/*.test.ts",
     "test:hls:smoke": "playwright test tests/hls/hls-playback.spec.ts --project=hls-smoke",
     "test:hls:url": "tsx scripts/hls/runSmoke.ts",
     "test:hls:bunny": "tsx scripts/hls/runSmoke.ts",
