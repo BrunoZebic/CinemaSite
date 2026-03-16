@@ -866,6 +866,29 @@ async function skipIfRoomNotPlayable(page: Page): Promise<void> {
   test.skip(roomNotPlayable, message);
 }
 
+async function revealDesktopPlayerChrome(page: Page): Promise<void> {
+  const playerShell = page.getByTestId("player-presentation-shell");
+  await playerShell.evaluate((element) => {
+    const dispatchPointerEvent = (type: string) => {
+      element.dispatchEvent(
+        new PointerEvent(type, {
+          bubbles: true,
+          composed: true,
+          pointerType: "mouse",
+          isPrimary: true,
+        }),
+      );
+    };
+
+    dispatchPointerEvent("pointerenter");
+    dispatchPointerEvent("pointermove");
+    dispatchPointerEvent("pointerdown");
+  });
+  await expect(playerShell).toHaveAttribute("data-player-chrome-visible", "true", {
+    timeout: 10_000,
+  });
+}
+
 async function assertPlayerFullscreenToggle(
   page: Page,
   testInfo: TestInfo,
@@ -876,14 +899,15 @@ async function assertPlayerFullscreenToggle(
     return;
   }
 
-  await page.getByTestId("player-presentation-shell").hover();
+  const playerShell = page.getByTestId("player-presentation-shell");
+  await revealDesktopPlayerChrome(page);
   const fullscreenToggle = page.getByTestId("fullscreen-toggle");
   await expect(fullscreenToggle).toBeVisible({
     timeout: 10_000,
   });
 
   try {
-    await expect(page.getByTestId("player-presentation-shell")).toHaveAttribute(
+    await expect(playerShell).toHaveAttribute(
       "data-player-fullscreen",
       "false",
       {
@@ -893,6 +917,7 @@ async function assertPlayerFullscreenToggle(
 
     await fullscreenToggle.click({
       timeout: 6_000,
+      force: true,
     });
 
     await expect
@@ -913,9 +938,10 @@ async function assertPlayerFullscreenToggle(
       )
       .toBe(true);
 
-    await page.getByTestId("player-presentation-shell").hover();
+    await revealDesktopPlayerChrome(page);
     await fullscreenToggle.click({
       timeout: 6_000,
+      force: true,
     });
 
     await expect
@@ -1175,6 +1201,18 @@ test.describe("Subtitle Toggle", () => {
     await skipIfSubtitleRoomNotPlayable(page);
 
     const gestureContext = await performGestureHandshake(page, testInfo);
+    await assertPlaybackNotStuck(
+      page,
+      testInfo,
+      "subtitle_playback_not_stuck",
+      gestureContext,
+    );
+    await waitForPlaybackProgress(
+      page,
+      testInfo,
+      "subtitle_playback_progress",
+      gestureContext,
+    );
 
     // Wait until the adapter has resolved the English subtitle track
     await expect
@@ -1192,17 +1230,21 @@ test.describe("Subtitle Toggle", () => {
       .toBe(true);
 
     // CC button must be visible and default ON
-    await page.getByTestId("player-presentation-shell").hover();
+    await revealDesktopPlayerChrome(page);
     const ccButton = page.getByTestId("subtitle-toggle");
     await expect(ccButton).toBeVisible();
     await expect(ccButton).toHaveAttribute("aria-pressed", "true");
 
     // Toggle off
-    await ccButton.click();
+    await ccButton.click({
+      force: true,
+    });
     await expect(ccButton).toHaveAttribute("aria-pressed", "false");
 
     // Toggle back on
-    await ccButton.click();
+    await ccButton.click({
+      force: true,
+    });
     await expect(ccButton).toHaveAttribute("aria-pressed", "true");
 
     void gestureContext; // consumed

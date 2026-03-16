@@ -3656,7 +3656,7 @@ const HlsSyncPlayer = forwardRef<VideoSyncPlayerHandle, HlsSyncPlayerProps>(
               <div className="video-controls">
                 <button
                   type="button"
-                  className={`player-icon-button${isMuted ? " is-active" : ""}`}
+                  className={`player-icon-button${!isMuted ? " is-active" : ""}`}
                   aria-label={isMuted ? "Unmute" : "Mute"}
                   title={isMuted ? "Unmute" : "Mute"}
                   onClick={() => {
