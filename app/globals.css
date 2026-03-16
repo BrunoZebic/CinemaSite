@@ -290,6 +290,7 @@ a {
 
 .video-playback-layer {
   z-index: 1;
+  pointer-events: none;
 }
 
 .video-player-host {
@@ -314,6 +315,7 @@ a {
   height: 100%;
   min-height: clamp(260px, 48vh, 560px);
   background: #000;
+  pointer-events: none;
 }
 
 .video-poster-layer {
@@ -442,7 +444,8 @@ a {
     opacity var(--ritual-fade-duration) ease,
     transform var(--ritual-fade-duration) ease,
     background var(--ritual-fade-duration) ease,
-    border-color var(--ritual-fade-duration) ease;
+    border-color var(--ritual-fade-duration) ease,
+    visibility 0s linear var(--ritual-fade-duration);
 }
 
 .video-presentation-shell[data-player-chrome-visible="false"] .video-controls,
@@ -450,6 +453,7 @@ a {
   opacity: 0;
   transform: translateY(12px);
   pointer-events: none;
+  visibility: hidden;
 }
 
 .video-presentation-shell[data-player-chrome-visible="true"] .video-controls,
@@ -457,6 +461,8 @@ a {
   opacity: 1;
   transform: translateY(0);
   pointer-events: auto;
+  visibility: visible;
+  transition-delay: 0s;
 }
 
 .player-icon-button {
@@ -542,7 +548,8 @@ a {
   transition:
     opacity var(--ritual-fade-duration) ease,
     transform var(--ritual-fade-duration) ease,
-    background var(--ritual-fade-duration) ease;
+    background var(--ritual-fade-duration) ease,
+    visibility 0s linear var(--ritual-fade-duration);
 }
 
 .video-gesture-overlay {

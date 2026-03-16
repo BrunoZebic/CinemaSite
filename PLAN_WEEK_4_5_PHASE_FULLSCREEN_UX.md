@@ -17,6 +17,13 @@
   - `SILENCE` blackout still wins
   - no screenshot testing; extend existing state-based assertions only if selectors or behavior contracts change
 
+## Revision 3 - Desktop Chrome Hit-Testing Fix
+- Keep the V1 icon/hover behavior, but repair desktop interaction so custom player chrome remains clickable over HLS playback:
+  - the playback surface must not steal pointer hit-testing from shell-owned controls
+  - hidden chrome should be treated as actually hidden, not merely transparent
+  - touch/coarse-pointer behavior stays unchanged
+- Scope is limited to the player interaction layer; no playback semantics, adapter contracts, or server bootstrap shapes change.
+
 ## Data And Interfaces
 - Add `posterImageUrl?: string | null` to `ScreeningConfig` in `lib/premiere/types.ts`.
 - Add `poster_image_url` to the `screenings` table in both `supabase/schema.sql` and a new forward-only Supabase migration.
