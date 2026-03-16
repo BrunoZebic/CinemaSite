@@ -151,6 +151,9 @@ type VideoDiagnostics = {
   probe: RuntimeProbeState | null;
   footerText: string;
   footerDisplayState: string | null;
+  playerFullscreen: string | null;
+  screenVisualState: string | null;
+  fullscreenElementTestId: string | null;
 };
 
 type GestureBranch = "cta_clicked" | "cta_not_required";
@@ -243,6 +246,10 @@ async function readVideoDiagnostics(page: Page): Promise<VideoDiagnostics> {
     const media = document.querySelector(
       '[data-testid="hls-video"]',
     ) as HTMLVideoElement | null;
+    const playerShell = document.querySelector(
+      '[data-testid="player-presentation-shell"]',
+    ) as HTMLElement | null;
+    const fullscreenElement = document.fullscreenElement as HTMLElement | null;
 
     const probe = (window as unknown as { __HLS_E2E_PROBE__?: RuntimeProbeState })
       .__HLS_E2E_PROBE__;
@@ -264,6 +271,9 @@ async function readVideoDiagnostics(page: Page): Promise<VideoDiagnostics> {
         probe: probe ?? null,
         footerText,
         footerDisplayState,
+        playerFullscreen: playerShell?.getAttribute("data-player-fullscreen") ?? null,
+        screenVisualState: playerShell?.getAttribute("data-screen-visual-state") ?? null,
+        fullscreenElementTestId: fullscreenElement?.getAttribute("data-testid") ?? null,
       };
     }
 
@@ -278,6 +288,9 @@ async function readVideoDiagnostics(page: Page): Promise<VideoDiagnostics> {
       probe: probe ?? null,
       footerText,
       footerDisplayState,
+      playerFullscreen: playerShell?.getAttribute("data-player-fullscreen") ?? null,
+      screenVisualState: playerShell?.getAttribute("data-screen-visual-state") ?? null,
+      fullscreenElementTestId: fullscreenElement?.getAttribute("data-testid") ?? null,
     };
   });
 }
@@ -300,6 +313,9 @@ async function attachDiagnostics(
     probe: null,
     footerText: "",
     footerDisplayState: null,
+    playerFullscreen: null,
+    screenVisualState: null,
+    fullscreenElementTestId: null,
   }));
 
   const safePayload = redactUnknown(
@@ -836,15 +852,11 @@ async function assertFooterAlignedWithProbe(
 }
 
 async function skipIfRoomNotPlayable(page: Page): Promise<void> {
-  const isClosed = await page
-    .getByText("Screening has closed.")
-    .isVisible()
-    .catch(() => false);
-  const isDiscussion = await page
-    .getByText("Discussion phase is open.")
-    .isVisible()
-    .catch(() => false);
-  const roomNotPlayable = isClosed || isDiscussion;
+  const phase = await page
+    .getByTestId("phase-badge")
+    .getAttribute("data-phase")
+    .catch(() => null);
+  const roomNotPlayable = phase === "DISCUSSION" || phase === "CLOSED";
   const message = `Room "${ROOM}" is not in a playable phase (WAITING/LIVE required).`;
 
   if (roomNotPlayable && FAIL_ON_NON_PLAYABLE_ROOM) {
@@ -852,6 +864,113 @@ async function skipIfRoomNotPlayable(page: Page): Promise<void> {
   }
 
   test.skip(roomNotPlayable, message);
+}
+
+async function revealDesktopPlayerChrome(page: Page): Promise<void> {
+  const playerShell = page.getByTestId("player-presentation-shell");
+  await playerShell.evaluate((element) => {
+    const dispatchPointerEvent = (type: string) => {
+      element.dispatchEvent(
+        new PointerEvent(type, {
+          bubbles: true,
+          composed: true,
+          pointerType: "mouse",
+          isPrimary: true,
+        }),
+      );
+    };
+
+    dispatchPointerEvent("pointerenter");
+    dispatchPointerEvent("pointermove");
+    dispatchPointerEvent("pointerdown");
+  });
+  await expect(playerShell).toHaveAttribute("data-player-chrome-visible", "true", {
+    timeout: 10_000,
+  });
+}
+
+async function assertPlayerFullscreenToggle(
+  page: Page,
+  testInfo: TestInfo,
+  context: GestureContext,
+  browserName: string,
+): Promise<void> {
+  if (browserName !== "chromium") {
+    return;
+  }
+
+  const playerShell = page.getByTestId("player-presentation-shell");
+  await revealDesktopPlayerChrome(page);
+  const fullscreenToggle = page.getByTestId("fullscreen-toggle");
+  await expect(fullscreenToggle).toBeVisible({
+    timeout: 10_000,
+  });
+
+  try {
+    await expect(playerShell).toHaveAttribute(
+      "data-player-fullscreen",
+      "false",
+      {
+        timeout: 5_000,
+      },
+    );
+
+    await fullscreenToggle.click({
+      timeout: 6_000,
+      force: true,
+    });
+
+    await expect
+      .poll(
+        async () => {
+          const snapshot = await readVideoDiagnostics(page);
+          return (
+            snapshot.playerFullscreen === "true" &&
+            snapshot.fullscreenElementTestId === "player-presentation-shell"
+          );
+        },
+        {
+          timeout: 8_000,
+          intervals: [100, 250, 500],
+          message:
+            "Expected fullscreen toggle to promote the player presentation shell into fullscreen.",
+        },
+      )
+      .toBe(true);
+
+    await revealDesktopPlayerChrome(page);
+    await fullscreenToggle.click({
+      timeout: 6_000,
+      force: true,
+    });
+
+    await expect
+      .poll(
+        async () => {
+          const snapshot = await readVideoDiagnostics(page);
+          return (
+            snapshot.playerFullscreen === "false" &&
+            snapshot.fullscreenElementTestId === null
+          );
+        },
+        {
+          timeout: 8_000,
+          intervals: [100, 250, 500],
+          message:
+            "Expected fullscreen toggle to restore the non-fullscreen player presentation shell.",
+        },
+      )
+      .toBe(true);
+  } catch (error) {
+    await attachDiagnostics(
+      page,
+      testInfo,
+      "fullscreen_toggle",
+      "Player fullscreen toggle did not enter/exit fullscreen as expected.",
+      context,
+    );
+    throw error;
+  }
 }
 
 test.beforeEach(async ({ context }) => {
@@ -887,6 +1006,7 @@ test.describe("Room Playback", () => {
       "playback_progress_primary",
       gestureContext,
     );
+    await assertPlayerFullscreenToggle(page, testInfo, gestureContext, browserName);
     await assertFooterAlignedWithProbe(
       page,
       testInfo,
@@ -1057,16 +1177,12 @@ async function completeInviteFlowWithCode(page: Page, code: string): Promise<voi
 }
 
 async function skipIfSubtitleRoomNotPlayable(page: Page): Promise<void> {
-  const isClosed = await page
-    .getByText("Screening has closed.")
-    .isVisible()
-    .catch(() => false);
-  const isDiscussion = await page
-    .getByText("Discussion phase is open.")
-    .isVisible()
-    .catch(() => false);
+  const phase = await page
+    .getByTestId("phase-badge")
+    .getAttribute("data-phase")
+    .catch(() => null);
   test.skip(
-    isClosed || isDiscussion,
+    phase === "DISCUSSION" || phase === "CLOSED",
     `Subtitle room "${SUBTITLE_ROOM}" is not in a playable phase (WAITING/LIVE required).`,
   );
 }
@@ -1085,6 +1201,18 @@ test.describe("Subtitle Toggle", () => {
     await skipIfSubtitleRoomNotPlayable(page);
 
     const gestureContext = await performGestureHandshake(page, testInfo);
+    await assertPlaybackNotStuck(
+      page,
+      testInfo,
+      "subtitle_playback_not_stuck",
+      gestureContext,
+    );
+    await waitForPlaybackProgress(
+      page,
+      testInfo,
+      "subtitle_playback_progress",
+      gestureContext,
+    );
 
     // Wait until the adapter has resolved the English subtitle track
     await expect
@@ -1102,16 +1230,21 @@ test.describe("Subtitle Toggle", () => {
       .toBe(true);
 
     // CC button must be visible and default ON
+    await revealDesktopPlayerChrome(page);
     const ccButton = page.getByTestId("subtitle-toggle");
     await expect(ccButton).toBeVisible();
     await expect(ccButton).toHaveAttribute("aria-pressed", "true");
 
     // Toggle off
-    await ccButton.click();
+    await ccButton.click({
+      force: true,
+    });
     await expect(ccButton).toHaveAttribute("aria-pressed", "false");
 
     // Toggle back on
-    await ccButton.click();
+    await ccButton.click({
+      force: true,
+    });
     await expect(ccButton).toHaveAttribute("aria-pressed", "true");
 
     void gestureContext; // consumed

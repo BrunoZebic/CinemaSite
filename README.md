@@ -123,6 +123,28 @@ Optional full room E2E:
 pnpm test:hls:room -- --base-url http://localhost:3100 --room demo --invite-code "..."
 ```
 
+Recommended local validation order:
+```bash
+pnpm lint
+pnpm build
+pnpm test:hls:bunny -- --room demo
+pnpm exec tsx scripts/hls/resetCiRoom.ts --room demo --start-offset-sec -90
+pnpm test:hls:room -- --base-url http://localhost:3100 --room demo --project room-e2e-chromium
+pnpm test:hls:phase -- --base-url http://localhost:3100 --room demo --project room-e2e-chromium
+```
+
+If `HLS_TEST_SUBTITLE_ROOM` is set locally, the room suite also runs the optional
+subtitle-room coverage. Reset that room into `LIVE` before the room suite too:
+```bash
+pnpm exec tsx scripts/hls/resetCiRoom.ts --room "$HLS_TEST_SUBTITLE_ROOM" --start-offset-sec -90
+```
+
+Known local workflow caveats:
+- `tests/hls/phase-transition-ui.spec.ts` intentionally mutates shared room timing. If you rerun `pnpm test:hls:room` after the phase suite, reset `demo` back into `LIVE` first.
+- If `HLS_TEST_SUBTITLE_ROOM` is set in `.env.local`, your local room suite is stricter than CI workflows that only reset the main room. Reset the subtitle room as well before reruns.
+- Do not run localhost-backed `test:hls:room` and `test:hls:phase` in parallel; both can try to manage the same local Playwright web server and collide on port `3100`.
+- CI preview/nightly workflows reset the primary CI room before each job. Local reruns need the same manual reset discipline when using shared test rooms.
+
 Remote room E2E note:
 - `scripts/hls/runRoomE2E.ts` only starts a local `pnpm dev` server for `localhost` / `127.0.0.1` base URLs.
 - Vercel preview and production URLs run directly against the deployed app.

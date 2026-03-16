@@ -25,6 +25,7 @@ type ScreeningRow = {
   max_message_chars?: number | null;
   video_provider?: string | null;
   video_asset_id?: string | null;
+  poster_image_url?: string | null;
   video_manifest_path?: string | null;
   video_manifest_url?: string | null;
   invite_code_hash?: string | null;
@@ -57,6 +58,7 @@ function mapScreening(row: ScreeningRow): ScreeningConfig {
         ? row.video_provider
         : "none",
     videoAssetId: row.video_asset_id ?? "",
+    posterImageUrl: row.poster_image_url ?? null,
     videoManifestPath: row.video_manifest_path ?? null,
     videoManifestUrl: row.video_manifest_url ?? null,
     inviteCodeHash: row.invite_code_hash,
@@ -144,6 +146,7 @@ function isAdvancedBunnyTokenMode(): boolean {
 function sanitizeScreeningForClient(screening: ScreeningConfig): ScreeningConfig {
   return {
     ...screening,
+    posterImageUrl: screening.posterImageUrl ?? null,
     videoManifestPath: null,
     videoManifestUrl: null,
     videoAssetId: screening.videoProvider === "vimeo" ? screening.videoAssetId : "",
