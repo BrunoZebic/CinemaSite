@@ -4,7 +4,7 @@
  * The adapter (HlsPlaybackAdapter) has browser/hls.js dependencies that do not
  * run in Node.js. These tests verify the same behavioral contracts using
  * self-contained stubs that replicate the adapter's subtitle state machine.
- * Logic patterns must stay in sync with the implementation in hlsAdapter.ts.
+ * Logic patterns must stay in sync with the implementation in hlsAdapterCore.ts.
  */
 
 import assert from "node:assert/strict";
@@ -20,7 +20,7 @@ interface HlsSubtitleTrack {
 }
 
 // ---------------------------------------------------------------------------
-// Pure helper: matches the exact selection logic in hlsAdapter._tryResolveTrackFromList
+// Pure helper: matches the exact selection logic in hlsAdapterCore._tryResolveTrackFromList
 // (hls.js path uses lang/name; native path uses language/label)
 // ---------------------------------------------------------------------------
 function findHlsEnglishTrack(
@@ -47,7 +47,7 @@ function findNativeEnglishTrack(
 }
 
 // ---------------------------------------------------------------------------
-// Minimal adapter-like state machine (mirrors hlsAdapter subtitle state)
+// Minimal adapter-like state machine (mirrors hlsAdapterCore subtitle state)
 // ---------------------------------------------------------------------------
 class SubtitleStateMachine {
   private _subtitleEnabled = true;
