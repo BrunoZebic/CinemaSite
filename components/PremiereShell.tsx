@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import InviteGateModal from "@/components/Access/InviteGateModal";
 import HostAuthInline from "@/components/Access/HostAuthInline";
 import ChatPanel from "@/components/Chat/ChatPanel";
@@ -23,7 +23,7 @@ import {
 import {
   badgeClassNameForPhase,
   chatVisualStateForPhase,
-  RITUAL_TRANSITION_DURATION_MS,
+  RITUAL_PHASE_TRANSITION_DURATION_MS,
   transitionKindForPhases,
   type PhaseTransitionKind,
   type PhaseVisualState,
@@ -39,6 +39,9 @@ type PremiereShellProps = {
 };
 
 const syncDebugEnabled = process.env.NEXT_PUBLIC_SYNC_DEBUG === "true";
+const phaseTransitionStyle = {
+  "--ritual-phase-transition-duration": `${RITUAL_PHASE_TRANSITION_DURATION_MS}ms`,
+} as CSSProperties;
 
 function countdownLabelForPhase(phase: PremierePhase): string | null {
   if (phase === "WAITING") {
@@ -200,7 +203,7 @@ export default function PremiereShell({ room, initialBootstrap }: PremiereShellP
     const timer = window.setTimeout(() => {
       setTransitionKind("none");
       setPhaseVisualState("steady");
-    }, RITUAL_TRANSITION_DURATION_MS);
+    }, RITUAL_PHASE_TRANSITION_DURATION_MS);
     return () => window.clearTimeout(timer);
   }, [phase]);
 
@@ -221,6 +224,7 @@ export default function PremiereShell({ room, initialBootstrap }: PremiereShellP
       data-phase={phase}
       data-phase-visual-state={phaseVisualState}
       data-transition-kind={transitionKind}
+      style={phaseTransitionStyle}
     >
       <header className="premiere-header slide-in">
         <div>
