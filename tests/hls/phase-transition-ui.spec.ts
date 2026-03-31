@@ -2,7 +2,12 @@ import { writeFile } from "node:fs/promises";
 import { expect, test, type BrowserContext, type Page, type TestInfo } from "@playwright/test";
 import { loadLocalEnv } from "../../scripts/hls/env";
 import { buildAuthKeySet, redactUnknown } from "../../scripts/hls/redact";
-import { getCiRoomConfig, resetCiRoomStart, type CiRoomConfig } from "../../scripts/hls/ciRoomHelper";
+import {
+  getCiRoomConfig,
+  resetCiRoomStart,
+  setCiRoomPosterImage,
+  type CiRoomConfig,
+} from "../../scripts/hls/ciRoomHelper";
 
 loadLocalEnv();
 
@@ -19,11 +24,14 @@ const INVITE_CODE =
   "";
 const WAITING_TO_LIVE_OFFSET_SEC = 60;
 const SILENCE_LEAD_SEC = 45;
+const DISCUSSION_LEAD_SEC = 8;
+const CLOSED_LEAD_SEC = 8;
 const CLEANUP_WAITING_OFFSET_SEC = 120;
 const MIN_FILM_DURATION_SEC = 60;
 const PHASE_TRANSITION_TIMEOUT_MS = 95_000;
 const UI_BRANCH_TIMEOUT_MS = 20_000;
 const POLL_INTERVAL_MS = 250;
+const POSTER_FIXTURE_URL = "/phase-poster-demo.svg";
 const IDENTITY_STORAGE_KEY = "premiere.identity.v1";
 const PHASE_IDENTITY = {
   nickname: "PhaseTester",
@@ -37,16 +45,44 @@ type PhaseProbeState = {
   isPrimed?: boolean;
 };
 
+type PhaseName = "WAITING" | "LIVE" | "SILENCE" | "DISCUSSION" | "CLOSED";
+type PhaseTransitionKind =
+  | "none"
+  | "to-live"
+  | "to-silence"
+  | "to-discussion"
+  | "to-closed";
+type PhaseVisualState = "steady" | "transitioning";
+type ScreenVisualState =
+  | "waiting-static"
+  | "live-motion"
+  | "silence-black"
+  | "discussion-poster"
+  | "discussion-static"
+  | "closed-poster"
+  | "closed-static";
+type ChatVisualState = "dimmed" | "hidden" | "bright" | "muted";
+
 type PhaseUiSnapshot = {
-  phase: string | null;
+  phase: PhaseName | null;
   countdownLabel: string | null;
+  shellPhase: PhaseName | null;
+  phaseVisualState: PhaseVisualState | null;
+  transitionKind: PhaseTransitionKind | null;
+  playerPhaseVisualState: PhaseVisualState | null;
+  playerTransitionKind: PhaseTransitionKind | null;
   chatOpen: string | null;
   chatPhase: string | null;
+  chatVisualState: ChatVisualState | null;
+  screenVisualState: ScreenVisualState | null;
+  playerFullscreen: string | null;
   waitingLobbyVisible: boolean;
   silenceBlackoutVisible: boolean;
   gestureVisible: boolean;
   recoveryRetryVisible: boolean;
   subtitleToggleVisible: boolean;
+  posterVisible: boolean;
+  staticTreatmentVisible: boolean;
   footerDisplayState: string | null;
   footerText: string;
   composerDisabled: boolean;
@@ -57,6 +93,9 @@ type PhaseUiSnapshot = {
 
 type WaitingBranch = "gesture_required" | "gesture_not_required";
 type LiveEntryBranch = "gesture_required" | "gesture_not_required";
+
+let originalPosterImageUrl: string | null = null;
+let posterFieldSupported = false;
 
 function roomUrl(): string {
   return `${BASE_URL.replace(/\/+$/, "")}/premiere/${encodeURIComponent(ROOM)}`;
@@ -130,14 +169,18 @@ async function readPhaseUiSnapshot(page: Page): Promise<PhaseUiSnapshot> {
       return Boolean(element.offsetWidth || element.offsetHeight || element.getClientRects().length);
     }
 
+    const shell = document.querySelector('[data-testid="premiere-shell"]');
     const phaseBadge = document.querySelector('[data-testid="phase-badge"]');
     const countdown = document.querySelector('[data-testid="phase-countdown"]');
     const chatPanel = document.querySelector('[data-testid="chat-panel"]');
+    const playerShell = document.querySelector('[data-testid="player-presentation-shell"]');
     const waitingLobby = document.querySelector('[data-testid="waiting-lobby-overlay"]');
     const silenceBlackout = document.querySelector('[data-testid="silence-blackout"]');
     const gestureButton = document.querySelector('[data-testid="gesture-play-cta"]');
     const recoveryRetry = document.querySelector('[data-testid="recovery-retry"]');
     const subtitleToggle = document.querySelector('[data-testid="subtitle-toggle"]');
+    const posterImage = document.querySelector('[data-testid="phase-poster-image"]');
+    const staticTreatment = document.querySelector('[data-testid="phase-static-treatment"]');
     const footer = document.querySelector('[data-testid="video-status-note"]');
     const composerInput = document.querySelector(
       '[data-testid="chat-composer-input"]',
@@ -149,15 +192,37 @@ async function readPhaseUiSnapshot(page: Page): Promise<PhaseUiSnapshot> {
     ).__HLS_E2E_PROBE__;
 
     return {
-      phase: phaseBadge?.getAttribute("data-phase") ?? null,
+      phase: (phaseBadge?.getAttribute("data-phase") as PhaseName | null) ?? null,
       countdownLabel: countdown?.getAttribute("data-countdown-label") ?? null,
+      shellPhase: (shell?.getAttribute("data-phase") as PhaseName | null) ?? null,
+      phaseVisualState:
+        (shell?.getAttribute("data-phase-visual-state") as PhaseVisualState | null) ??
+        null,
+      transitionKind:
+        (shell?.getAttribute("data-transition-kind") as PhaseTransitionKind | null) ??
+        null,
+      playerPhaseVisualState:
+        (playerShell?.getAttribute("data-player-phase-visual-state") as PhaseVisualState | null) ??
+        null,
+      playerTransitionKind:
+        (playerShell?.getAttribute("data-player-transition-kind") as PhaseTransitionKind | null) ??
+        null,
       chatOpen: chatPanel?.getAttribute("data-chat-open") ?? null,
       chatPhase: chatPanel?.getAttribute("data-chat-phase") ?? null,
+      chatVisualState:
+        (chatPanel?.getAttribute("data-chat-visual-state") as ChatVisualState | null) ??
+        null,
+      screenVisualState:
+        (playerShell?.getAttribute("data-screen-visual-state") as ScreenVisualState | null) ??
+        null,
+      playerFullscreen: playerShell?.getAttribute("data-player-fullscreen") ?? null,
       waitingLobbyVisible: isVisible(waitingLobby),
       silenceBlackoutVisible: isVisible(silenceBlackout),
       gestureVisible: isVisible(gestureButton),
       recoveryRetryVisible: isVisible(recoveryRetry),
       subtitleToggleVisible: isVisible(subtitleToggle),
+      posterVisible: isVisible(posterImage),
+      staticTreatmentVisible: isVisible(staticTreatment),
       footerDisplayState: footer?.getAttribute("data-footer-display-state") ?? null,
       footerText: footer?.textContent?.trim() ?? "",
       composerDisabled: composerInput?.disabled ?? true,
@@ -208,7 +273,7 @@ async function attachDiagnostics(
 
 async function assertInitialPhaseState(
   page: Page,
-  expectedPhase: "WAITING" | "LIVE",
+  expectedPhase: "WAITING" | "LIVE" | "SILENCE" | "DISCUSSION",
   expectedCountdownLabel: string,
   expectedChatOpen: "true" | "false",
 ): Promise<PhaseUiSnapshot> {
@@ -218,6 +283,7 @@ async function assertInitialPhaseState(
         const snapshot = await readPhaseUiSnapshot(page);
         if (
           snapshot.phase === expectedPhase &&
+          snapshot.shellPhase === expectedPhase &&
           snapshot.countdownLabel === expectedCountdownLabel &&
           snapshot.chatOpen === expectedChatOpen &&
           snapshot.inviteVisible === false &&
@@ -235,6 +301,66 @@ async function assertInitialPhaseState(
       },
     )
     .toBe(true);
+
+  return readPhaseUiSnapshot(page);
+}
+
+async function waitForTransitionKind(
+  page: Page,
+  expectedTransitionKind: Exclude<PhaseTransitionKind, "none">,
+): Promise<PhaseUiSnapshot> {
+  await page.waitForFunction(
+    (expectedKind) => {
+      const shell = document.querySelector('[data-testid="premiere-shell"]');
+      const playerShell = document.querySelector('[data-testid="player-presentation-shell"]');
+      if (!(shell instanceof HTMLElement) || !(playerShell instanceof HTMLElement)) {
+        return false;
+      }
+
+      return (
+        shell.getAttribute("data-transition-kind") === expectedKind &&
+        shell.getAttribute("data-phase-visual-state") === "transitioning" &&
+        playerShell.getAttribute("data-player-transition-kind") === expectedKind &&
+        playerShell.getAttribute("data-player-phase-visual-state") === "transitioning"
+      );
+    },
+    expectedTransitionKind,
+    {
+      timeout: PHASE_TRANSITION_TIMEOUT_MS,
+      polling: 50,
+    },
+  );
+
+  return readPhaseUiSnapshot(page);
+}
+
+async function waitForSteadyPhase(
+  page: Page,
+  expectedPhase: PhaseName,
+): Promise<PhaseUiSnapshot> {
+  await expect
+    .poll(
+      async () => {
+        const snapshot = await readPhaseUiSnapshot(page);
+        if (
+          snapshot.phase === expectedPhase &&
+          snapshot.shellPhase === expectedPhase &&
+          snapshot.phaseVisualState === "steady" &&
+          snapshot.transitionKind === "none" &&
+          snapshot.playerPhaseVisualState === "steady" &&
+          snapshot.playerTransitionKind === "none"
+        ) {
+          return expectedPhase;
+        }
+        return snapshot.phase;
+      },
+      {
+        timeout: PHASE_TRANSITION_TIMEOUT_MS,
+        intervals: [POLL_INTERVAL_MS, 500, 1_000],
+        message: `Expected room to settle into ${expectedPhase}.`,
+      },
+    )
+    .toBe(expectedPhase);
 
   return readPhaseUiSnapshot(page);
 }
@@ -342,19 +468,27 @@ async function resolveLiveEntryBranch(page: Page): Promise<LiveEntryBranch> {
   return "gesture_required";
 }
 
-async function waitForPhase(page: Page, expectedPhase: "LIVE" | "SILENCE"): Promise<PhaseUiSnapshot> {
-  await expect
-    .poll(
-      async () => (await readPhaseUiSnapshot(page)).phase,
-      {
-        timeout: PHASE_TRANSITION_TIMEOUT_MS,
-        intervals: [POLL_INTERVAL_MS, 500, 1_000],
-        message: `Expected room to transition into ${expectedPhase}.`,
-      },
-    )
-    .toBe(expectedPhase);
+function discussionStartOffsetSec(roomConfig: CiRoomConfig): number {
+  const leadSeconds = Math.min(
+    DISCUSSION_LEAD_SEC,
+    Math.max(2, roomConfig.silenceDurationSec - 2),
+  );
+  return -(
+    roomConfig.filmDurationSec +
+    roomConfig.silenceDurationSec -
+    leadSeconds
+  );
+}
 
-  return readPhaseUiSnapshot(page);
+function closedStartOffsetSec(roomConfig: CiRoomConfig): number {
+  const discussionDurationSec = roomConfig.discussionDurationMin * 60;
+  const leadSeconds = Math.min(CLOSED_LEAD_SEC, Math.max(2, discussionDurationSec - 2));
+  return -(
+    roomConfig.filmDurationSec +
+    roomConfig.silenceDurationSec +
+    discussionDurationSec -
+    leadSeconds
+  );
 }
 
 test.beforeEach(async ({ context }) => {
@@ -372,6 +506,15 @@ test.describe("Phase Transition UI", () => {
   test.setTimeout(PHASE_TRANSITION_TIMEOUT_MS + 70_000);
   test.skip(!INVITE_CODE, "Missing HLS_TEST_INVITE_CODE.");
 
+  test.beforeAll(async () => {
+    const roomConfig = await getCiRoomConfig(ROOM);
+    originalPosterImageUrl = roomConfig.posterImageUrl;
+    posterFieldSupported = roomConfig.supportsPosterField;
+    if (posterFieldSupported) {
+      await setCiRoomPosterImage(ROOM, POSTER_FIXTURE_URL);
+    }
+  });
+
   test.afterAll(async () => {
     try {
       await resetCiRoomStart(ROOM, CLEANUP_WAITING_OFFSET_SEC);
@@ -380,9 +523,19 @@ test.describe("Phase Transition UI", () => {
         error instanceof Error ? error.message : `Unknown cleanup error: ${String(error)}`;
       process.stderr.write(`Phase suite cleanup reset failed: ${message}\n`);
     }
+
+    try {
+      if (posterFieldSupported) {
+        await setCiRoomPosterImage(ROOM, originalPosterImageUrl);
+      }
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : `Unknown poster cleanup error: ${String(error)}`;
+      process.stderr.write(`Phase suite cleanup poster reset failed: ${message}\n`);
+    }
   });
 
-  test("WAITING transitions into LIVE with branch-aware UI proof", async ({
+  test("WAITING transitions into LIVE with branch-aware ritual state", async ({
     page,
     context,
   }) => {
@@ -395,19 +548,32 @@ test.describe("Phase Transition UI", () => {
       "Starts in",
       "false",
     );
+    expect(initialSnapshot.phaseVisualState).toBe("steady");
+    expect(initialSnapshot.transitionKind).toBe("none");
+    expect(initialSnapshot.playerPhaseVisualState).toBe("steady");
+    expect(initialSnapshot.playerTransitionKind).toBe("none");
+    expect(initialSnapshot.screenVisualState).toBe("waiting-static");
+    expect(initialSnapshot.chatVisualState).toBe("dimmed");
     expect(initialSnapshot.chatPhase).toBe("WAITING");
 
     const branch = await resolveWaitingBranch(page);
     await satisfyWaitingBranch(page, branch);
+    const transitionSnapshot = await waitForTransitionKind(page, "to-live");
+    expect(transitionSnapshot.phaseVisualState).toBe("transitioning");
+    expect(transitionSnapshot.transitionKind).toBe("to-live");
+    expect(transitionSnapshot.playerPhaseVisualState).toBe("transitioning");
+    expect(transitionSnapshot.playerTransitionKind).toBe("to-live");
 
-    const liveSnapshot = await waitForPhase(page, "LIVE");
+    const liveSnapshot = await waitForSteadyPhase(page, "LIVE");
     expect(liveSnapshot.countdownLabel).toBe("Silence in");
     expect(liveSnapshot.waitingLobbyVisible).toBe(false);
     expect(liveSnapshot.chatOpen).toBe("true");
     expect(liveSnapshot.chatPhase).toBe("LIVE");
+    expect(liveSnapshot.screenVisualState).toBe("live-motion");
+    expect(liveSnapshot.chatVisualState).toBe("dimmed");
   });
 
-  test("SILENCE has precedence over live playback UI", async ({
+  test("SILENCE keeps blackout precedence and hides chat presentation", async ({
     page,
     context,
   }) => {
@@ -427,11 +593,17 @@ test.describe("Phase Transition UI", () => {
       "Silence in",
       "true",
     );
-    expect(liveEntrySnapshot.chatPhase).toBe("LIVE");
+    expect(liveEntrySnapshot.chatVisualState).toBe("dimmed");
+    expect(liveEntrySnapshot.screenVisualState).toBe("live-motion");
+    expect(liveEntrySnapshot.playerPhaseVisualState).toBe("steady");
+    expect(liveEntrySnapshot.playerTransitionKind).toBe("none");
 
     await resolveLiveEntryBranch(page);
+    const transitionSnapshot = await waitForTransitionKind(page, "to-silence");
+    expect(transitionSnapshot.playerPhaseVisualState).toBe("transitioning");
+    expect(transitionSnapshot.playerTransitionKind).toBe("to-silence");
 
-    const silenceSnapshot = await waitForPhase(page, "SILENCE");
+    const silenceSnapshot = await waitForSteadyPhase(page, "SILENCE");
     expect(silenceSnapshot.countdownLabel).toBe("Discussion opens in");
     expect(silenceSnapshot.silenceBlackoutVisible).toBe(true);
     expect(silenceSnapshot.gestureVisible).toBe(false);
@@ -441,6 +613,8 @@ test.describe("Phase Transition UI", () => {
     expect(silenceSnapshot.footerDisplayState).toBe("SILENCE");
     expect(silenceSnapshot.chatOpen).toBe("false");
     expect(silenceSnapshot.chatPhase).toBe("SILENCE");
+    expect(silenceSnapshot.screenVisualState).toBe("silence-black");
+    expect(silenceSnapshot.chatVisualState).toBe("hidden");
     await expect(page.getByTestId("chat-composer-input")).toBeDisabled();
 
     const response = await context.request.post(roomMessagesUrl(), {
@@ -453,5 +627,79 @@ test.describe("Phase Transition UI", () => {
       },
     });
     expect(response.status()).toBe(403);
+  });
+
+  test("DISCUSSION restores bright chat and reveals the configured poster", async ({
+    page,
+    context,
+  }) => {
+    const roomConfig = await getCiRoomConfig(ROOM);
+    await resetCiRoomStart(ROOM, discussionStartOffsetSec(roomConfig));
+    await openPhaseRoom(page, context);
+
+    const silenceSnapshot = await assertInitialPhaseState(
+      page,
+      "SILENCE",
+      "Discussion opens in",
+      "false",
+    );
+    expect(silenceSnapshot.screenVisualState).toBe("silence-black");
+    expect(silenceSnapshot.chatVisualState).toBe("hidden");
+    expect(silenceSnapshot.playerPhaseVisualState).toBe("steady");
+    expect(silenceSnapshot.playerTransitionKind).toBe("none");
+
+    const transitionSnapshot = await waitForTransitionKind(page, "to-discussion");
+    expect(transitionSnapshot.playerPhaseVisualState).toBe("transitioning");
+    expect(transitionSnapshot.playerTransitionKind).toBe("to-discussion");
+
+    const discussionSnapshot = await waitForSteadyPhase(page, "DISCUSSION");
+    expect(discussionSnapshot.countdownLabel).toBe("Room closes in");
+    expect(discussionSnapshot.chatOpen).toBe("true");
+    expect(discussionSnapshot.chatPhase).toBe("DISCUSSION");
+    expect(discussionSnapshot.chatVisualState).toBe("bright");
+    expect(discussionSnapshot.screenVisualState).toBe(
+      posterFieldSupported ? "discussion-poster" : "discussion-static",
+    );
+    expect(discussionSnapshot.posterVisible).toBe(posterFieldSupported);
+    expect(discussionSnapshot.silenceBlackoutVisible).toBe(false);
+    await expect(page.getByTestId("chat-composer-input")).toBeEditable();
+  });
+
+  test("CLOSED resolves into a muted poster-backed archive state", async ({
+    page,
+    context,
+  }) => {
+    const roomConfig = await getCiRoomConfig(ROOM);
+    await resetCiRoomStart(ROOM, closedStartOffsetSec(roomConfig));
+    await openPhaseRoom(page, context);
+
+    const discussionSnapshot = await assertInitialPhaseState(
+      page,
+      "DISCUSSION",
+      "Room closes in",
+      "true",
+    );
+    expect(discussionSnapshot.chatVisualState).toBe("bright");
+    expect(discussionSnapshot.screenVisualState).toBe(
+      posterFieldSupported ? "discussion-poster" : "discussion-static",
+    );
+    expect(discussionSnapshot.posterVisible).toBe(posterFieldSupported);
+    expect(discussionSnapshot.playerPhaseVisualState).toBe("steady");
+    expect(discussionSnapshot.playerTransitionKind).toBe("none");
+
+    const transitionSnapshot = await waitForTransitionKind(page, "to-closed");
+    expect(transitionSnapshot.playerPhaseVisualState).toBe("transitioning");
+    expect(transitionSnapshot.playerTransitionKind).toBe("to-closed");
+
+    const closedSnapshot = await waitForSteadyPhase(page, "CLOSED");
+    expect(closedSnapshot.countdownLabel).toBe(null);
+    expect(closedSnapshot.chatOpen).toBe("false");
+    expect(closedSnapshot.chatPhase).toBe("CLOSED");
+    expect(closedSnapshot.chatVisualState).toBe("muted");
+    expect(closedSnapshot.screenVisualState).toBe(
+      posterFieldSupported ? "closed-poster" : "closed-static",
+    );
+    expect(closedSnapshot.posterVisible).toBe(posterFieldSupported);
+    expect(closedSnapshot.composerDisabled).toBe(true);
   });
 });

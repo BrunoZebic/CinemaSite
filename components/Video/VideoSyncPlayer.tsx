@@ -2,6 +2,7 @@
 
 import {
   forwardRef,
+  type CSSProperties,
   useCallback,
   useEffect,
   useImperativeHandle,
@@ -9,6 +10,12 @@ import {
   useState,
 } from "react";
 import { clampPlaybackTargetSec } from "@/lib/premiere/phase";
+import {
+  PLAYER_PHASE_TRANSITION_DURATION_MS,
+  isPlaybackSurfacePhase,
+  screenVisualStateForPhase,
+} from "@/lib/premiere/presentation";
+import { usePhaseTransition } from "@/lib/premiere/use-phase-transition";
 import type { PremierePhase, ScreeningConfig } from "@/lib/premiere/types";
 import type {
   VideoSyncDebugState,
@@ -22,6 +29,9 @@ const SOFT_CORRECTION_WINDOW_MS = 5000;
 const HARD_SEEK_THRESHOLD_SEC = 2;
 const DEFAULT_SOFT_THRESHOLD_SEC = 0.25;
 const NO_RATE_SOFT_THRESHOLD_SEC = 0.5;
+const playerTransitionStyle = {
+  "--ritual-player-transition-duration": `${PLAYER_PHASE_TRANSITION_DURATION_MS}ms`,
+} as CSSProperties;
 
 type VideoSyncPlayerProps = {
   room: string;
@@ -35,6 +45,19 @@ type VideoSyncPlayerProps = {
 
 function isLivePhase(phase: PremierePhase): boolean {
   return phase === "LIVE";
+}
+
+function phaseMessage(phase: PremierePhase): string {
+  if (phase === "DISCUSSION") {
+    return "Discussion is open.";
+  }
+  if (phase === "CLOSED") {
+    return "Screening concluded.";
+  }
+  if (phase === "WAITING") {
+    return "Premiere is waiting to begin.";
+  }
+  return "Screen is preparing.";
 }
 
 const VideoSyncPlayer = forwardRef<VideoSyncPlayerHandle, VideoSyncPlayerProps>(
@@ -67,6 +90,7 @@ const VideoSyncPlayer = forwardRef<VideoSyncPlayerHandle, VideoSyncPlayerProps>(
 
     const providerReady = screening?.videoProvider === "vimeo";
     const videoAssetId = screening?.videoAssetId ?? "";
+    const posterImageUrl = screening?.posterImageUrl ?? null;
 
     const publishDebugState = useCallback(
       (patch?: Partial<VideoSyncDebugState>) => {
@@ -320,8 +344,26 @@ const VideoSyncPlayer = forwardRef<VideoSyncPlayerHandle, VideoSyncPlayerProps>(
       syncToCanonicalTime,
     ]);
 
-    const showPlayer =
-      hasAccess && providerReady && videoAssetId && phase !== "DISCUSSION" && phase !== "CLOSED";
+    const hasPresentationShell = Boolean(screening && hasAccess);
+    const showPlaybackSurface =
+      hasPresentationShell &&
+      providerReady &&
+      Boolean(videoAssetId) &&
+      isPlaybackSurfacePhase(phase);
+    const showPosterLayer =
+      hasPresentationShell &&
+      (phase === "DISCUSSION" || phase === "CLOSED") &&
+      Boolean(posterImageUrl);
+    const showStaticPresentation =
+      hasPresentationShell && !showPlaybackSurface && !showPosterLayer;
+    const screenVisualState = screenVisualStateForPhase(
+      phase,
+      Boolean(posterImageUrl),
+    );
+    const {
+      phaseVisualState: playerPhaseVisualState,
+      transitionKind: playerTransitionKind,
+    } = usePhaseTransition(phase, PLAYER_PHASE_TRANSITION_DURATION_MS);
 
     return (
       <div className="video-shell">
@@ -334,9 +376,53 @@ const VideoSyncPlayer = forwardRef<VideoSyncPlayerHandle, VideoSyncPlayerProps>(
           <div className="video-frame">
             <p className="video-state">Enter invite code to unlock the screen.</p>
           </div>
-        ) : showPlayer ? (
-          <div className="video-frame video-player-frame">
-            <div className="video-player-host" ref={hostRef} />
+        ) : hasPresentationShell ? (
+          <div
+            className="video-frame video-player-frame video-presentation-shell"
+            data-testid="player-presentation-shell"
+            data-phase={phase}
+            data-screen-visual-state={screenVisualState}
+            data-player-phase-visual-state={playerPhaseVisualState}
+            data-player-transition-kind={playerTransitionKind}
+            data-player-fullscreen="false"
+            style={playerTransitionStyle}
+          >
+            {showPlaybackSurface ? (
+              <div className="video-playback-layer">
+                <div className="video-player-host" ref={hostRef} />
+              </div>
+            ) : null}
+            {showPosterLayer ? (
+              <div className="video-poster-layer">
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img
+                  src={posterImageUrl ?? undefined}
+                  alt={`${screening.title} poster`}
+                  className="video-poster-image"
+                  data-testid="phase-poster-image"
+                />
+                <div className="video-poster-meta">
+                  <p className="video-poster-kicker">
+                    {phase === "DISCUSSION" ? "Discussion" : "Closed"}
+                  </p>
+                  <p className="video-poster-title">{screening.title}</p>
+                </div>
+              </div>
+            ) : null}
+            <div className="video-transition-overlay" aria-hidden="true" />
+            {showStaticPresentation ? (
+              <div className="video-presentation-card" data-testid="phase-static-treatment">
+                <p className="video-presentation-kicker">
+                  {phase === "DISCUSSION"
+                    ? "Discussion"
+                    : phase === "CLOSED"
+                      ? "Closed"
+                      : "Screen"}
+                </p>
+                <p className="video-presentation-title">{screening.title}</p>
+                <p className="video-state">{phaseMessage(phase)}</p>
+              </div>
+            ) : null}
             {phase === "WAITING" ? (
               <div data-testid="waiting-lobby-overlay" hidden />
             ) : null}
@@ -348,11 +434,7 @@ const VideoSyncPlayer = forwardRef<VideoSyncPlayerHandle, VideoSyncPlayerProps>(
           </div>
         ) : (
           <div className="video-frame">
-            <p className="video-state">
-              {phase === "DISCUSSION"
-                ? "Discussion phase is open."
-                : "Screening has closed."}
-            </p>
+            <p className="video-state">Screen presentation is unavailable.</p>
           </div>
         )}
         <p className="video-status-note">{statusText}</p>

@@ -1,10 +1,14 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import InviteGateModal from "@/components/Access/InviteGateModal";
 import HostAuthInline from "@/components/Access/HostAuthInline";
 import ChatPanel from "@/components/Chat/ChatPanel";
 import Countdown from "@/components/Countdown";
+import {
+  ChatBubbleIcon,
+  CloseIcon,
+} from "@/components/PremiereControlIcons";
 import HlsSyncPlayer from "@/components/Video/HlsSyncPlayer";
 import VideoSyncPlayer from "@/components/Video/VideoSyncPlayer";
 import type {
@@ -16,6 +20,12 @@ import {
   getPhaseEndsAtUnixMs,
   isChatOpenForPhase,
 } from "@/lib/premiere/phase";
+import {
+  badgeClassNameForPhase,
+  chatVisualStateForPhase,
+  ROOM_PHASE_TRANSITION_DURATION_MS,
+} from "@/lib/premiere/presentation";
+import { usePhaseTransition } from "@/lib/premiere/use-phase-transition";
 import type { PremierePhase, RoomBootstrap } from "@/lib/premiere/types";
 import { formatUnixDateTime } from "@/lib/premiereConfig";
 import type { ChannelHealthStatus } from "@/lib/chat/realtime";
@@ -27,18 +37,9 @@ type PremiereShellProps = {
 };
 
 const syncDebugEnabled = process.env.NEXT_PUBLIC_SYNC_DEBUG === "true";
-
-function stateClassName(state: PremierePhase): string {
-  if (state === "WAITING") {
-    return "state-waiting";
-  }
-
-  if (state === "LIVE" || state === "DISCUSSION") {
-    return "state-live";
-  }
-
-  return "state-ended";
-}
+const roomTransitionStyle = {
+  "--ritual-room-transition-duration": `${ROOM_PHASE_TRANSITION_DURATION_MS}ms`,
+} as CSSProperties;
 
 function countdownLabelForPhase(phase: PremierePhase): string | null {
   if (phase === "WAITING") {
@@ -83,7 +84,12 @@ export default function PremiereShell({ room, initialBootstrap }: PremiereShellP
   const hasAccess = bootstrap.hasAccess;
   const isHost = bootstrap.isHost;
   const chatOpen = Boolean(screening && hasAccess && isChatOpenForPhase(phase));
+  const chatVisualState = chatVisualStateForPhase(phase);
   const useHlsPlayer = screening?.videoProvider === "hls";
+  const { phaseVisualState, transitionKind } = usePhaseTransition(
+    phase,
+    ROOM_PHASE_TRANSITION_DURATION_MS,
+  );
 
   const refreshBootstrap = useCallback(async (): Promise<RoomBootstrap | null> => {
     const response = await fetch(`/api/rooms/${room}/bootstrap`, {
@@ -175,12 +181,25 @@ export default function PremiereShell({ room, initialBootstrap }: PremiereShellP
     return () => window.clearInterval(timer);
   }, [mounted, refreshServerTime]);
 
+  useEffect(() => {
+    if (chatVisualState === "hidden") {
+      setMobileChatOpen(false);
+    }
+  }, [chatVisualState]);
+
   const roomTitle = screening ? screening.title : `Room "${room}" not scheduled`;
   const countdownTarget = screening ? getPhaseEndsAtUnixMs(phase, screening) : null;
   const countdownLabel = countdownLabelForPhase(phase);
 
   return (
-    <div className="premiere-page">
+    <div
+      className="premiere-page"
+      data-testid="premiere-shell"
+      data-phase={phase}
+      data-phase-visual-state={phaseVisualState}
+      data-transition-kind={transitionKind}
+      style={roomTransitionStyle}
+    >
       <header className="premiere-header slide-in">
         <div>
           <p className="premiere-eyebrow">Live Cinema Premiere Room</p>
@@ -191,7 +210,7 @@ export default function PremiereShell({ room, initialBootstrap }: PremiereShellP
           {screening ? (
             <>
               <span
-                className={`state-badge ${stateClassName(phase)}`}
+                className={`state-badge ${badgeClassNameForPhase(phase)}`}
                 data-testid="phase-badge"
                 data-phase={phase}
               >
@@ -257,15 +276,20 @@ export default function PremiereShell({ room, initialBootstrap }: PremiereShellP
           )}
         </section>
 
-        <aside className={`chat-drawer ${mobileChatOpen ? "open" : ""}`}>
+        <aside
+          className={`chat-drawer ${mobileChatOpen ? "open" : ""}`}
+          data-chat-visual-state={chatVisualState}
+          data-chat-open={String(chatOpen)}
+        >
           <div className="chat-drawer-head">
             <h3 className="chat-drawer-title">Audience Chat</h3>
             <button
               className="chat-close-btn"
               type="button"
+              aria-label="Close chat"
               onClick={() => setMobileChatOpen(false)}
             >
-              Close
+              <CloseIcon className="ui-icon" />
             </button>
           </div>
           <ChatPanel
@@ -275,6 +299,7 @@ export default function PremiereShell({ room, initialBootstrap }: PremiereShellP
             hasAccess={hasAccess}
             isHost={isHost}
             chatOpen={chatOpen}
+            visualState={chatVisualState}
             phase={phase}
             slowModeSeconds={screening?.slowModeSeconds ?? 60}
             maxMessageChars={screening?.maxMessageChars ?? 320}
@@ -284,7 +309,7 @@ export default function PremiereShell({ room, initialBootstrap }: PremiereShellP
         </aside>
       </div>
 
-      {mobileChatOpen ? (
+      {mobileChatOpen && chatVisualState !== "hidden" ? (
         <button
           className="chat-backdrop"
           type="button"
@@ -293,13 +318,18 @@ export default function PremiereShell({ room, initialBootstrap }: PremiereShellP
         />
       ) : null}
 
-      <button
-        className="chat-toggle"
-        type="button"
-        onClick={() => setMobileChatOpen((current) => !current)}
-      >
-        Chat
-      </button>
+      {chatVisualState !== "hidden" ? (
+        <button
+          className="chat-toggle"
+          type="button"
+          data-testid="chat-toggle"
+          aria-label={mobileChatOpen ? "Close chat" : "Open chat"}
+          aria-expanded={mobileChatOpen}
+          onClick={() => setMobileChatOpen((current) => !current)}
+        >
+          <ChatBubbleIcon className="ui-icon" />
+        </button>
+      ) : null}
 
       <InviteGateModal
         open={mounted && Boolean(screening) && !hasAccess}

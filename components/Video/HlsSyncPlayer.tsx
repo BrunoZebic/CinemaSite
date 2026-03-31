@@ -2,12 +2,22 @@
 
 import {
   forwardRef,
+  type CSSProperties,
+  type FocusEvent,
+  type PointerEvent,
   useCallback,
   useEffect,
   useImperativeHandle,
   useRef,
   useState,
 } from "react";
+import {
+  ClosedCaptionsIcon,
+  FullscreenEnterIcon,
+  FullscreenExitIcon,
+  VolumeMutedIcon,
+  VolumeOnIcon,
+} from "@/components/PremiereControlIcons";
 import type {
   HlsRecoveryErrorClass,
   HlsRecoveryState,
@@ -19,11 +29,17 @@ import type {
   VideoSyncPlayerHandle,
 } from "@/components/Video/types";
 import { clampPlaybackTargetSec } from "@/lib/premiere/phase";
+import {
+  PLAYER_PHASE_TRANSITION_DURATION_MS,
+  isPlaybackSurfacePhase,
+  screenVisualStateForPhase,
+} from "@/lib/premiere/presentation";
 import type {
   PremierePhase,
   RoomBootstrap,
   ScreeningConfig,
 } from "@/lib/premiere/types";
+import { usePhaseTransition } from "@/lib/premiere/use-phase-transition";
 import {
   HlsPlaybackAdapter,
   type HlsAdapterLifecycleDebug,
@@ -55,8 +71,12 @@ const SHORT_PROGRESS_DELTA_MIN_SEC = 0.1;
 const LIVE_PAUSE_RESUME_COOLDOWN_MS = 2000;
 const GESTURE_OVERLAY_ACCEPT_MS = 80;
 const GESTURE_OVERLAY_EXIT_MS = 240;
+const PLAYER_CHROME_IDLE_TIMEOUT_MS = 3000;
 const shouldExposeHlsE2EProbe =
   process.env.NODE_ENV !== "production" || process.env.NEXT_PUBLIC_E2E === "1";
+const playerTransitionStyle = {
+  "--ritual-player-transition-duration": `${PLAYER_PHASE_TRANSITION_DURATION_MS}ms`,
+} as CSSProperties;
 
 type HlsSyncPlayerProps = {
   room: string;
@@ -79,6 +99,8 @@ type SyncOptions = {
 };
 
 type GestureOverlayPhase = "idle" | "accepting" | "exiting";
+type PlayerShellPointerEvent = PointerEvent<HTMLDivElement>;
+type PlayerShellFocusEvent = FocusEvent<HTMLDivElement>;
 type OperationOwner = "none" | "startup" | "token_refresh" | "recovery";
 type PendingReinitReason = "token_refresh" | "recovery" | null;
 type StartupSource =
@@ -210,6 +232,28 @@ function isIosSafariBrowser(): boolean {
   const isIOS = /iPad|iPhone|iPod/.test(ua);
   const isSafari = /Safari/i.test(ua) && !/CriOS|FxiOS|EdgiOS|OPiOS/i.test(ua);
   return isIOS && isSafari;
+}
+
+function phasePresentationMessage(
+  phase: PremierePhase,
+  playbackConfigError: string | null,
+): string {
+  if (playbackConfigError) {
+    return playbackConfigError;
+  }
+  if (phase === "DISCUSSION") {
+    return "Discussion is open.";
+  }
+  if (phase === "CLOSED") {
+    return "Screening concluded.";
+  }
+  if (phase === "SILENCE") {
+    return "Silence interval in progress.";
+  }
+  if (phase === "WAITING") {
+    return "Premiere is waiting to begin.";
+  }
+  return "Screen is preparing.";
 }
 
 function statusTextForPlaybackStartState(state: PlaybackStartState): string {
@@ -351,6 +395,7 @@ const HlsSyncPlayer = forwardRef<VideoSyncPlayerHandle, HlsSyncPlayerProps>(
     ref,
   ) {
     const videoRef = useRef<HTMLVideoElement | null>(null);
+    const playerShellRef = useRef<HTMLDivElement | null>(null);
     const nextVideoElementMountIdRef = useRef(0);
     const videoElementMountIdRef = useRef(0);
     const videoRefAssignedAtMsRef = useRef<number | null>(null);
@@ -415,6 +460,7 @@ const HlsSyncPlayer = forwardRef<VideoSyncPlayerHandle, HlsSyncPlayerProps>(
     const lastPauseAtMsRef = useRef<number | null>(null);
     const suppressedThenTappedSuspectedRef = useRef(false);
     const livePauseResumeTimerRef = useRef<number | null>(null);
+    const chromeHideTimerRef = useRef<number | null>(null);
     const livePauseCooldownUntilRef = useRef(0);
     const authRecoveryAttemptsRef = useRef<number[]>([]);
     const networkRecoveryStepRef = useRef<0 | 1 | 2>(0);
@@ -473,6 +519,7 @@ const HlsSyncPlayer = forwardRef<VideoSyncPlayerHandle, HlsSyncPlayerProps>(
     const [isPrimed, setIsPrimed] = useState(false);
     const [subtitlesEnabled, setSubtitlesEnabled] = useState(true);
     const [hasSubtitleTrack, setHasSubtitleTrack] = useState(false);
+    const hasSubtitleTrackRef = useRef(hasSubtitleTrack);
     const [, setStatusText] = useState("Loading stream...");
     const [isMuted, setIsMuted] = useState(false);
     const [volume, setVolume] = useState(1);
@@ -495,6 +542,9 @@ const HlsSyncPlayer = forwardRef<VideoSyncPlayerHandle, HlsSyncPlayerProps>(
     const [isGestureOverlayMounted, setIsGestureOverlayMounted] = useState(false);
     const [gestureOverlayPhase, setGestureOverlayPhase] =
       useState<GestureOverlayPhase>("idle");
+    const [isPresentationFullscreen, setIsPresentationFullscreen] = useState(false);
+    const [shouldAutoHideChrome, setShouldAutoHideChrome] = useState(false);
+    const [isPlayerChromeVisible, setIsPlayerChromeVisible] = useState(false);
     const [videoMountVersion, setVideoMountVersion] = useState(0);
     const driftDebugRef = useRef(driftDebug);
     const readyStateRef = useRef(readyState);
@@ -510,6 +560,7 @@ const HlsSyncPlayer = forwardRef<VideoSyncPlayerHandle, HlsSyncPlayerProps>(
     onDebugStateChangeRef.current = onDebugStateChange;
     channelStatusRef.current = channelStatus;
     driftDebugRef.current = driftDebug;
+    hasSubtitleTrackRef.current = hasSubtitleTrack;
     readyStateRef.current = readyState;
     isPlayerReadyRef.current = isPlayerReady;
     recoveryStateRef.current = recoveryState;
@@ -680,7 +731,7 @@ const HlsSyncPlayer = forwardRef<VideoSyncPlayerHandle, HlsSyncPlayerProps>(
             suppressedThenTappedSuspected: Boolean(
               nextDebugState.suppressedThenTappedSuspected,
             ),
-            hasSubtitleTrack: false, // patched by dedicated effect below
+            hasSubtitleTrack: hasSubtitleTrackRef.current,
           };
         }
 
@@ -2953,6 +3004,10 @@ const HlsSyncPlayer = forwardRef<VideoSyncPlayerHandle, HlsSyncPlayerProps>(
 
     const assignVideoRef = useCallback(
       (node: HTMLVideoElement | null) => {
+        if (videoRef.current === node) {
+          return;
+        }
+
         videoRef.current = node;
         if (!node) {
           videoRefAssignedAtMsRef.current = null;
@@ -3009,13 +3064,95 @@ const HlsSyncPlayer = forwardRef<VideoSyncPlayerHandle, HlsSyncPlayerProps>(
       setIsMuted(video.muted);
     }, []);
 
-    const handleFullscreen = useCallback(() => {
-      const video = videoRef.current;
-      if (!video) {
+    useEffect(() => {
+      if (typeof document === "undefined") {
         return;
       }
 
-      if (video.requestFullscreen) {
+      const fullscreenDocument = document as Document & {
+        webkitFullscreenElement?: Element | null;
+      };
+      const syncFullscreenState = () => {
+        const playerShell = playerShellRef.current;
+        const activeFullscreenElement =
+          document.fullscreenElement ?? fullscreenDocument.webkitFullscreenElement ?? null;
+        setIsPresentationFullscreen(
+          Boolean(playerShell && activeFullscreenElement === playerShell),
+        );
+      };
+
+      syncFullscreenState();
+      document.addEventListener("fullscreenchange", syncFullscreenState);
+      document.addEventListener(
+        "webkitfullscreenchange",
+        syncFullscreenState as EventListener,
+      );
+      return () => {
+        document.removeEventListener("fullscreenchange", syncFullscreenState);
+        document.removeEventListener(
+          "webkitfullscreenchange",
+          syncFullscreenState as EventListener,
+        );
+      };
+    }, []);
+
+    useEffect(() => {
+      if (typeof window === "undefined" || typeof window.matchMedia !== "function") {
+        return;
+      }
+
+      const media = window.matchMedia("(hover: hover) and (pointer: fine)");
+      const syncAutoHideMode = () => {
+        setShouldAutoHideChrome(media.matches);
+      };
+
+      syncAutoHideMode();
+      if (typeof media.addEventListener === "function") {
+        media.addEventListener("change", syncAutoHideMode);
+        return () => media.removeEventListener("change", syncAutoHideMode);
+      }
+
+      media.addListener(syncAutoHideMode);
+      return () => media.removeListener(syncAutoHideMode);
+    }, []);
+
+    const handleFullscreen = useCallback(() => {
+      const playerShell = playerShellRef.current;
+      const video = videoRef.current;
+      if (!playerShell && !video) {
+        return;
+      }
+
+      const fullscreenDocument = document as Document & {
+        webkitExitFullscreen?: () => void;
+        webkitFullscreenElement?: Element | null;
+      };
+      const shellElement = playerShell as
+        | (HTMLDivElement & { webkitRequestFullscreen?: () => void })
+        | null;
+      const activeFullscreenElement =
+        document.fullscreenElement ?? fullscreenDocument.webkitFullscreenElement ?? null;
+
+      if (playerShell && activeFullscreenElement === playerShell) {
+        if (document.exitFullscreen) {
+          void document.exitFullscreen();
+          return;
+        }
+        fullscreenDocument.webkitExitFullscreen?.();
+        return;
+      }
+
+      if (shellElement?.requestFullscreen) {
+        void shellElement.requestFullscreen();
+        return;
+      }
+
+      if (shellElement?.webkitRequestFullscreen) {
+        shellElement.webkitRequestFullscreen();
+        return;
+      }
+
+      if (video?.requestFullscreen) {
         void video.requestFullscreen();
         return;
       }
@@ -3031,6 +3168,36 @@ const HlsSyncPlayer = forwardRef<VideoSyncPlayerHandle, HlsSyncPlayerProps>(
         webkitVideo.webkitEnterFullscreen();
       }
     }, []);
+
+    const clearChromeHideTimer = useCallback(() => {
+      if (chromeHideTimerRef.current === null) {
+        return;
+      }
+      window.clearTimeout(chromeHideTimerRef.current);
+      chromeHideTimerRef.current = null;
+    }, []);
+
+    const scheduleChromeHide = useCallback(
+      (delayMs = PLAYER_CHROME_IDLE_TIMEOUT_MS) => {
+        if (!shouldAutoHideChrome) {
+          return;
+        }
+        clearChromeHideTimer();
+        chromeHideTimerRef.current = window.setTimeout(() => {
+          setIsPlayerChromeVisible(false);
+          chromeHideTimerRef.current = null;
+        }, delayMs);
+      },
+      [clearChromeHideTimer, shouldAutoHideChrome],
+    );
+
+    const revealPlayerChrome = useCallback(
+      (delayMs = PLAYER_CHROME_IDLE_TIMEOUT_MS) => {
+        setIsPlayerChromeVisible(true);
+        scheduleChromeHide(delayMs);
+      },
+      [scheduleChromeHide],
+    );
 
     const handleSubtitleToggle = useCallback(() => {
       if (phase === "SILENCE") return;
@@ -3110,34 +3277,59 @@ const HlsSyncPlayer = forwardRef<VideoSyncPlayerHandle, HlsSyncPlayerProps>(
       updateRecoveryState,
     ]);
 
-    const showPlayer =
-      hasAccess &&
+    const posterImageUrl = screening?.posterImageUrl ?? null;
+    const hasPresentationShell = Boolean(screening && hasAccess);
+    const showPlaybackSurface =
+      hasPresentationShell &&
       screening?.videoProvider === "hls" &&
-      phase !== "DISCUSSION" &&
-      phase !== "CLOSED" &&
+      isPlaybackSurfacePhase(phase) &&
       !playbackConfigError;
+    const showPosterLayer =
+      hasPresentationShell &&
+      (phase === "DISCUSSION" || phase === "CLOSED") &&
+      Boolean(posterImageUrl);
+    const showStaticPresentation =
+      hasPresentationShell && !showPlaybackSurface && !showPosterLayer;
+    const screenVisualState = screenVisualStateForPhase(
+      phase,
+      Boolean(posterImageUrl),
+    );
+    const {
+      phaseVisualState: playerPhaseVisualState,
+      transitionKind: playerTransitionKind,
+    } = usePhaseTransition(phase, PLAYER_PHASE_TRANSITION_DURATION_MS);
     const isPrimingNeeded = requiresPriming && !isPrimed;
     const isGestureRequired =
-      showPlayer &&
+      showPlaybackSurface &&
       phase !== "SILENCE" &&
       (playbackStartState === "BLOCKED_AUTOPLAY" ||
         (isPrimingNeeded && (phase === "WAITING" || phase === "LIVE")));
     const scrubEnabled =
-      rehearsalScrubEnabled && phase !== "LIVE" && phase !== "SILENCE" && showPlayer;
-    const showSilenceBlackout = showPlayer && phase === "SILENCE";
+      rehearsalScrubEnabled &&
+      phase !== "LIVE" &&
+      phase !== "SILENCE" &&
+      showPlaybackSurface;
+    const showSilenceBlackout = hasPresentationShell && phase === "SILENCE";
     const showRecoveryOverlay =
-      showPlayer && !showSilenceBlackout && recoveryState === "DEGRADED";
+      showPlaybackSurface && !showSilenceBlackout && recoveryState === "DEGRADED";
     const showGestureOverlay =
-      showPlayer &&
+      showPlaybackSurface &&
       !showSilenceBlackout &&
       !showRecoveryOverlay &&
       (isGestureRequired || isGestureOverlayMounted);
     const showWaitingLobbyOverlay =
-      showPlayer &&
+      showPlaybackSurface &&
       !showSilenceBlackout &&
       !showRecoveryOverlay &&
       phase === "WAITING" &&
       !isGestureRequired;
+    const showPlayerChrome =
+      showPlaybackSurface &&
+      !showSilenceBlackout &&
+      !showGestureOverlay &&
+      !showRecoveryOverlay;
+    const playerChromeVisible =
+      showPlayerChrome && (!shouldAutoHideChrome || isPlayerChromeVisible);
     const footerDisplayState = deriveFooterDisplayState({
       phase,
       recoveryState,
@@ -3147,7 +3339,7 @@ const HlsSyncPlayer = forwardRef<VideoSyncPlayerHandle, HlsSyncPlayerProps>(
     const footerStatusText = footerDisplayStateToText(footerDisplayState);
 
     useEffect(() => {
-      if (!showPlayer || recoveryState === "DEGRADED") {
+      if (!showPlaybackSurface || recoveryState === "DEGRADED") {
         return;
       }
       if (phase !== "WAITING" && phase !== "LIVE") {
@@ -3174,12 +3366,12 @@ const HlsSyncPlayer = forwardRef<VideoSyncPlayerHandle, HlsSyncPlayerProps>(
       playbackStartState,
       recoveryState,
       requiresPriming,
-      showPlayer,
+      showPlaybackSurface,
       updatePlaybackStartState,
     ]);
 
     useEffect(() => {
-      if (showSilenceBlackout || !showPlayer) {
+      if (showSilenceBlackout || !showPlaybackSurface) {
         hideGestureOverlayImmediately();
         return;
       }
@@ -3201,8 +3393,36 @@ const HlsSyncPlayer = forwardRef<VideoSyncPlayerHandle, HlsSyncPlayerProps>(
       gestureOverlayPhase,
       hideGestureOverlayImmediately,
       isGestureRequired,
-      showPlayer,
+      showPlaybackSurface,
       showSilenceBlackout,
+    ]);
+
+    useEffect(() => {
+      if (!showPlayerChrome) {
+        clearChromeHideTimer();
+        setIsPlayerChromeVisible(false);
+        return;
+      }
+      if (!shouldAutoHideChrome) {
+        setIsPlayerChromeVisible(true);
+        return;
+      }
+      setIsPlayerChromeVisible(false);
+      return () => {
+        clearChromeHideTimer();
+      };
+    }, [clearChromeHideTimer, showPlayerChrome, shouldAutoHideChrome]);
+
+    useEffect(() => {
+      if (!showPlayerChrome || !shouldAutoHideChrome || !isPresentationFullscreen) {
+        return;
+      }
+      revealPlayerChrome();
+    }, [
+      isPresentationFullscreen,
+      revealPlayerChrome,
+      showPlayerChrome,
+      shouldAutoHideChrome,
     ]);
 
     useEffect(() => {
@@ -3211,8 +3431,9 @@ const HlsSyncPlayer = forwardRef<VideoSyncPlayerHandle, HlsSyncPlayerProps>(
           delete window.__HLS_E2E_PROBE__;
         }
         clearGestureOverlayTimers();
+        clearChromeHideTimer();
       };
-    }, [clearGestureOverlayTimers]);
+    }, [clearChromeHideTimer, clearGestureOverlayTimers]);
 
     // Suppress subtitles during SILENCE (captions render outside CSS stacking context)
     useEffect(() => {
@@ -3235,6 +3456,84 @@ const HlsSyncPlayer = forwardRef<VideoSyncPlayerHandle, HlsSyncPlayerProps>(
       };
     }, []);
 
+    const handlePlayerShellPointerEnter = useCallback(
+      (event: PlayerShellPointerEvent) => {
+        if (!showPlayerChrome) {
+          return;
+        }
+        if (event.pointerType && event.pointerType !== "mouse") {
+          clearChromeHideTimer();
+          setIsPlayerChromeVisible(true);
+          return;
+        }
+        revealPlayerChrome();
+      },
+      [clearChromeHideTimer, revealPlayerChrome, showPlayerChrome],
+    );
+
+    const handlePlayerShellPointerMove = useCallback(
+      (event: PlayerShellPointerEvent) => {
+        if (!showPlayerChrome) {
+          return;
+        }
+        if (event.pointerType && event.pointerType !== "mouse") {
+          clearChromeHideTimer();
+          setIsPlayerChromeVisible(true);
+          return;
+        }
+        revealPlayerChrome();
+      },
+      [clearChromeHideTimer, revealPlayerChrome, showPlayerChrome],
+    );
+
+    const handlePlayerShellPointerDownCapture = useCallback(
+      (event: PlayerShellPointerEvent) => {
+        if (!showPlayerChrome) {
+          return;
+        }
+        if (event.pointerType && event.pointerType !== "mouse") {
+          clearChromeHideTimer();
+          setIsPlayerChromeVisible(true);
+          return;
+        }
+        revealPlayerChrome();
+      },
+      [clearChromeHideTimer, revealPlayerChrome, showPlayerChrome],
+    );
+
+    const handlePlayerShellPointerLeave = useCallback(() => {
+      if (!showPlayerChrome || !shouldAutoHideChrome) {
+        return;
+      }
+      clearChromeHideTimer();
+      setIsPlayerChromeVisible(false);
+    }, [clearChromeHideTimer, shouldAutoHideChrome, showPlayerChrome]);
+
+    const handlePlayerShellFocusCapture = useCallback(() => {
+      if (!showPlayerChrome) {
+        return;
+      }
+      clearChromeHideTimer();
+      setIsPlayerChromeVisible(true);
+    }, [clearChromeHideTimer, showPlayerChrome]);
+
+    const handlePlayerShellBlurCapture = useCallback(
+      (event: PlayerShellFocusEvent) => {
+        if (!showPlayerChrome || !shouldAutoHideChrome) {
+          return;
+        }
+        const nextFocused = event.relatedTarget;
+        if (
+          nextFocused instanceof Node &&
+          event.currentTarget.contains(nextFocused)
+        ) {
+          return;
+        }
+        scheduleChromeHide(150);
+      },
+      [scheduleChromeHide, shouldAutoHideChrome, showPlayerChrome],
+    );
+
     return (
       <div className="video-shell">
         <h2 className="video-heading">Screen</h2>
@@ -3246,19 +3545,71 @@ const HlsSyncPlayer = forwardRef<VideoSyncPlayerHandle, HlsSyncPlayerProps>(
           <div className="video-frame">
             <p className="video-state">Enter invite code to unlock the screen.</p>
           </div>
-        ) : playbackConfigError ? (
-          <div className="video-frame">
-            <p className="video-state">{playbackConfigError}</p>
-          </div>
-        ) : showPlayer ? (
-          <div className="video-frame video-player-frame hls-player-frame">
-            <video
-              ref={assignVideoRef}
-              data-testid="hls-video"
-              className="hls-video-element"
-              playsInline
-              preload="auto"
-            />
+        ) : hasPresentationShell ? (
+          <div
+            ref={playerShellRef}
+            className="video-frame video-player-frame video-presentation-shell hls-player-frame"
+            data-testid="player-presentation-shell"
+            data-phase={phase}
+            data-screen-visual-state={screenVisualState}
+            data-player-phase-visual-state={playerPhaseVisualState}
+            data-player-transition-kind={playerTransitionKind}
+            data-player-fullscreen={String(isPresentationFullscreen)}
+            data-player-chrome-visible={String(playerChromeVisible)}
+            style={playerTransitionStyle}
+            onPointerEnter={handlePlayerShellPointerEnter}
+            onPointerMove={handlePlayerShellPointerMove}
+            onPointerDownCapture={handlePlayerShellPointerDownCapture}
+            onPointerLeave={handlePlayerShellPointerLeave}
+            onFocusCapture={handlePlayerShellFocusCapture}
+            onBlurCapture={handlePlayerShellBlurCapture}
+          >
+            {showPlaybackSurface ? (
+              <div className="video-playback-layer">
+                <video
+                  ref={assignVideoRef}
+                  data-testid="hls-video"
+                  className="hls-video-element"
+                  playsInline
+                  preload="auto"
+                />
+              </div>
+            ) : null}
+            {showPosterLayer ? (
+              <div className="video-poster-layer">
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img
+                  src={posterImageUrl ?? undefined}
+                  alt={`${screening.title} poster`}
+                  className="video-poster-image"
+                  data-testid="phase-poster-image"
+                />
+                <div className="video-poster-meta">
+                  <p className="video-poster-kicker">
+                    {phase === "DISCUSSION" ? "Discussion" : "Closed"}
+                  </p>
+                  <p className="video-poster-title">{screening.title}</p>
+                </div>
+              </div>
+            ) : null}
+            <div className="video-transition-overlay" aria-hidden="true" />
+            {showStaticPresentation ? (
+              <div className="video-presentation-card" data-testid="phase-static-treatment">
+                <p className="video-presentation-kicker">
+                  {phase === "DISCUSSION"
+                    ? "Discussion"
+                    : phase === "CLOSED"
+                      ? "Closed"
+                      : phase === "SILENCE"
+                        ? "Silence"
+                        : "Screen"}
+                </p>
+                <p className="video-presentation-title">{screening.title}</p>
+                <p className="video-state">
+                  {phasePresentationMessage(phase, playbackConfigError)}
+                </p>
+              </div>
+            ) : null}
             {showSilenceBlackout ? (
               <div className="video-blackout" data-testid="silence-blackout">
                 <p>Silence</p>
@@ -3314,39 +3665,78 @@ const HlsSyncPlayer = forwardRef<VideoSyncPlayerHandle, HlsSyncPlayerProps>(
                 </button>
               </div>
             ) : null}
-            <div className="video-controls">
-              <button type="button" onClick={handleToggleMute}>
-                {isMuted ? "Unmute" : "Mute"}
-              </button>
-              <label className="volume-control">
-                <span>Volume</span>
-                <input
-                  type="range"
-                  min={0}
-                  max={1}
-                  step={0.01}
-                  value={isMuted ? 0 : volume}
-                  onChange={(event) =>
-                    handleVolumeChange(Number(event.currentTarget.value))
-                  }
-                />
-              </label>
-              <button type="button" onClick={handleFullscreen}>
-                Fullscreen
-              </button>
-              {hasSubtitleTrack && phase !== "SILENCE" ? (
+            {showPlayerChrome ? (
+              <div className="video-controls">
                 <button
                   type="button"
-                  className={`subtitle-toggle-btn${subtitlesEnabled ? " active" : ""}`}
-                  data-testid="subtitle-toggle"
-                  aria-pressed={subtitlesEnabled}
-                  onClick={handleSubtitleToggle}
+                  className={`player-icon-button${!isMuted ? " is-active" : ""}`}
+                  aria-label={isMuted ? "Unmute" : "Mute"}
+                  title={isMuted ? "Unmute" : "Mute"}
+                  onClick={() => {
+                    revealPlayerChrome();
+                    handleToggleMute();
+                  }}
                 >
-                  CC
+                  {isMuted ? (
+                    <VolumeMutedIcon className="ui-icon" />
+                  ) : (
+                    <VolumeOnIcon className="ui-icon" />
+                  )}
                 </button>
-              ) : null}
-            </div>
-            {scrubEnabled ? (
+                <label className="volume-control">
+                  <input
+                    type="range"
+                    aria-label="Volume"
+                    min={0}
+                    max={1}
+                    step={0.01}
+                    value={isMuted ? 0 : volume}
+                    onChange={(event) => {
+                      revealPlayerChrome();
+                      handleVolumeChange(Number(event.currentTarget.value));
+                    }}
+                  />
+                </label>
+                <div className="video-controls-actions-right">
+                  {hasSubtitleTrack && phase !== "SILENCE" ? (
+                    <button
+                      type="button"
+                      className={`player-icon-button subtitle-toggle-btn${
+                        subtitlesEnabled ? " active" : ""
+                      }`}
+                      data-testid="subtitle-toggle"
+                      aria-label={subtitlesEnabled ? "Disable captions" : "Enable captions"}
+                      aria-pressed={subtitlesEnabled}
+                      title={subtitlesEnabled ? "Disable captions" : "Enable captions"}
+                      onClick={() => {
+                        revealPlayerChrome();
+                        handleSubtitleToggle();
+                      }}
+                    >
+                      <ClosedCaptionsIcon className="ui-icon" />
+                    </button>
+                  ) : null}
+                  <button
+                    type="button"
+                    className="player-icon-button"
+                    data-testid="fullscreen-toggle"
+                    aria-label={isPresentationFullscreen ? "Exit fullscreen" : "Enter fullscreen"}
+                    title={isPresentationFullscreen ? "Exit fullscreen" : "Enter fullscreen"}
+                    onClick={() => {
+                      revealPlayerChrome();
+                      handleFullscreen();
+                    }}
+                  >
+                    {isPresentationFullscreen ? (
+                      <FullscreenExitIcon className="ui-icon" />
+                    ) : (
+                      <FullscreenEnterIcon className="ui-icon" />
+                    )}
+                  </button>
+                </div>
+              </div>
+            ) : null}
+            {showPlayerChrome && scrubEnabled ? (
               <label className="scrub-control">
                 <span>Rehearsal Scrub</span>
                 <input
@@ -3355,20 +3745,17 @@ const HlsSyncPlayer = forwardRef<VideoSyncPlayerHandle, HlsSyncPlayerProps>(
                   max={Math.max(1, Math.floor(playerDuration || 1))}
                   step={1}
                   value={Math.floor(playerTime)}
-                  onChange={(event) =>
-                    void handleScrub(Number(event.currentTarget.value))
-                  }
+                  onChange={(event) => {
+                    revealPlayerChrome();
+                    void handleScrub(Number(event.currentTarget.value));
+                  }}
                 />
               </label>
             ) : null}
           </div>
         ) : (
           <div className="video-frame">
-            <p className="video-state">
-              {phase === "DISCUSSION"
-                ? "Discussion phase is open."
-                : "Screening has closed."}
-            </p>
+            <p className="video-state">Screen presentation is unavailable.</p>
           </div>
         )}
         {/* Footer text is derived from coordinator-facing state; legacy statusText is retained for compatibility/debug flows. */}

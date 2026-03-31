@@ -11,6 +11,7 @@ create table if not exists screenings (
   max_message_chars integer not null default 320,
   video_provider text not null default 'vimeo',
   video_asset_id text not null default '',
+  poster_image_url text,
   video_manifest_path text,
   video_manifest_url text,
   invite_code_hash text,
@@ -21,6 +22,9 @@ create table if not exists screenings (
   constraint screenings_hls_manifest_path_chk
     check (video_provider <> 'hls' or video_manifest_path is not null)
 );
+
+alter table screenings
+  add column if not exists poster_image_url text;
 
 alter table screenings
   add column if not exists video_manifest_path text;
