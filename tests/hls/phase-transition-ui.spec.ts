@@ -69,6 +69,8 @@ type PhaseUiSnapshot = {
   shellPhase: PhaseName | null;
   phaseVisualState: PhaseVisualState | null;
   transitionKind: PhaseTransitionKind | null;
+  playerPhaseVisualState: PhaseVisualState | null;
+  playerTransitionKind: PhaseTransitionKind | null;
   chatOpen: string | null;
   chatPhase: string | null;
   chatVisualState: ChatVisualState | null;
@@ -199,6 +201,12 @@ async function readPhaseUiSnapshot(page: Page): Promise<PhaseUiSnapshot> {
       transitionKind:
         (shell?.getAttribute("data-transition-kind") as PhaseTransitionKind | null) ??
         null,
+      playerPhaseVisualState:
+        (playerShell?.getAttribute("data-player-phase-visual-state") as PhaseVisualState | null) ??
+        null,
+      playerTransitionKind:
+        (playerShell?.getAttribute("data-player-transition-kind") as PhaseTransitionKind | null) ??
+        null,
       chatOpen: chatPanel?.getAttribute("data-chat-open") ?? null,
       chatPhase: chatPanel?.getAttribute("data-chat-phase") ?? null,
       chatVisualState:
@@ -300,17 +308,20 @@ async function assertInitialPhaseState(
 async function waitForTransitionKind(
   page: Page,
   expectedTransitionKind: Exclude<PhaseTransitionKind, "none">,
-): Promise<void> {
+): Promise<PhaseUiSnapshot> {
   await page.waitForFunction(
     (expectedKind) => {
       const shell = document.querySelector('[data-testid="premiere-shell"]');
-      if (!(shell instanceof HTMLElement)) {
+      const playerShell = document.querySelector('[data-testid="player-presentation-shell"]');
+      if (!(shell instanceof HTMLElement) || !(playerShell instanceof HTMLElement)) {
         return false;
       }
 
       return (
         shell.getAttribute("data-transition-kind") === expectedKind &&
-        shell.getAttribute("data-phase-visual-state") === "transitioning"
+        shell.getAttribute("data-phase-visual-state") === "transitioning" &&
+        playerShell.getAttribute("data-player-transition-kind") === expectedKind &&
+        playerShell.getAttribute("data-player-phase-visual-state") === "transitioning"
       );
     },
     expectedTransitionKind,
@@ -319,6 +330,8 @@ async function waitForTransitionKind(
       polling: 50,
     },
   );
+
+  return readPhaseUiSnapshot(page);
 }
 
 async function waitForSteadyPhase(
@@ -332,7 +345,10 @@ async function waitForSteadyPhase(
         if (
           snapshot.phase === expectedPhase &&
           snapshot.shellPhase === expectedPhase &&
-          snapshot.phaseVisualState === "steady"
+          snapshot.phaseVisualState === "steady" &&
+          snapshot.transitionKind === "none" &&
+          snapshot.playerPhaseVisualState === "steady" &&
+          snapshot.playerTransitionKind === "none"
         ) {
           return expectedPhase;
         }
@@ -534,13 +550,19 @@ test.describe("Phase Transition UI", () => {
     );
     expect(initialSnapshot.phaseVisualState).toBe("steady");
     expect(initialSnapshot.transitionKind).toBe("none");
+    expect(initialSnapshot.playerPhaseVisualState).toBe("steady");
+    expect(initialSnapshot.playerTransitionKind).toBe("none");
     expect(initialSnapshot.screenVisualState).toBe("waiting-static");
     expect(initialSnapshot.chatVisualState).toBe("dimmed");
     expect(initialSnapshot.chatPhase).toBe("WAITING");
 
     const branch = await resolveWaitingBranch(page);
     await satisfyWaitingBranch(page, branch);
-    await waitForTransitionKind(page, "to-live");
+    const transitionSnapshot = await waitForTransitionKind(page, "to-live");
+    expect(transitionSnapshot.phaseVisualState).toBe("transitioning");
+    expect(transitionSnapshot.transitionKind).toBe("to-live");
+    expect(transitionSnapshot.playerPhaseVisualState).toBe("transitioning");
+    expect(transitionSnapshot.playerTransitionKind).toBe("to-live");
 
     const liveSnapshot = await waitForSteadyPhase(page, "LIVE");
     expect(liveSnapshot.countdownLabel).toBe("Silence in");
@@ -573,9 +595,13 @@ test.describe("Phase Transition UI", () => {
     );
     expect(liveEntrySnapshot.chatVisualState).toBe("dimmed");
     expect(liveEntrySnapshot.screenVisualState).toBe("live-motion");
+    expect(liveEntrySnapshot.playerPhaseVisualState).toBe("steady");
+    expect(liveEntrySnapshot.playerTransitionKind).toBe("none");
 
     await resolveLiveEntryBranch(page);
-    await waitForTransitionKind(page, "to-silence");
+    const transitionSnapshot = await waitForTransitionKind(page, "to-silence");
+    expect(transitionSnapshot.playerPhaseVisualState).toBe("transitioning");
+    expect(transitionSnapshot.playerTransitionKind).toBe("to-silence");
 
     const silenceSnapshot = await waitForSteadyPhase(page, "SILENCE");
     expect(silenceSnapshot.countdownLabel).toBe("Discussion opens in");
@@ -619,8 +645,12 @@ test.describe("Phase Transition UI", () => {
     );
     expect(silenceSnapshot.screenVisualState).toBe("silence-black");
     expect(silenceSnapshot.chatVisualState).toBe("hidden");
+    expect(silenceSnapshot.playerPhaseVisualState).toBe("steady");
+    expect(silenceSnapshot.playerTransitionKind).toBe("none");
 
-    await waitForTransitionKind(page, "to-discussion");
+    const transitionSnapshot = await waitForTransitionKind(page, "to-discussion");
+    expect(transitionSnapshot.playerPhaseVisualState).toBe("transitioning");
+    expect(transitionSnapshot.playerTransitionKind).toBe("to-discussion");
 
     const discussionSnapshot = await waitForSteadyPhase(page, "DISCUSSION");
     expect(discussionSnapshot.countdownLabel).toBe("Room closes in");
@@ -654,8 +684,12 @@ test.describe("Phase Transition UI", () => {
       posterFieldSupported ? "discussion-poster" : "discussion-static",
     );
     expect(discussionSnapshot.posterVisible).toBe(posterFieldSupported);
+    expect(discussionSnapshot.playerPhaseVisualState).toBe("steady");
+    expect(discussionSnapshot.playerTransitionKind).toBe("none");
 
-    await waitForTransitionKind(page, "to-closed");
+    const transitionSnapshot = await waitForTransitionKind(page, "to-closed");
+    expect(transitionSnapshot.playerPhaseVisualState).toBe("transitioning");
+    expect(transitionSnapshot.playerTransitionKind).toBe("to-closed");
 
     const closedSnapshot = await waitForSteadyPhase(page, "CLOSED");
     expect(closedSnapshot.countdownLabel).toBe(null);

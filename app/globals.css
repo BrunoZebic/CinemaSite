@@ -14,7 +14,8 @@
   --ok: #7AADA0;
   --shadow-lg: 0 24px 48px rgba(8, 5, 3, 0.50);
   --ritual-fade-duration: 650ms;
-  --ritual-phase-transition-duration: 650ms;
+  --ritual-room-transition-duration: 650ms;
+  --ritual-player-transition-duration: 650ms;
 }
 
 * {
@@ -96,8 +97,8 @@ a {
   padding: 1.25rem;
   animation: ritual-room-enter 700ms ease-in-out;
   transition:
-    background var(--ritual-phase-transition-duration) ease,
-    color var(--ritual-phase-transition-duration) ease;
+    background var(--ritual-room-transition-duration) ease,
+    color var(--ritual-room-transition-duration) ease;
 }
 
 .premiere-page[data-phase="SILENCE"] {
@@ -110,8 +111,8 @@ a {
   opacity: 0.15;
   filter: brightness(0.4);
   transition:
-    opacity var(--ritual-phase-transition-duration) ease-in-out,
-    filter var(--ritual-phase-transition-duration) ease-in-out;
+    opacity var(--ritual-room-transition-duration) ease-in-out,
+    filter var(--ritual-room-transition-duration) ease-in-out;
 }
 
 .premiere-page[data-phase="SILENCE"]::after {
@@ -134,8 +135,8 @@ a {
   opacity: 1;
   filter: brightness(1.06);
   transition:
-    opacity var(--ritual-phase-transition-duration) ease-in-out,
-    filter var(--ritual-phase-transition-duration) ease-in-out;
+    opacity var(--ritual-room-transition-duration) ease-in-out,
+    filter var(--ritual-room-transition-duration) ease-in-out;
 }
 
 .premiere-header {
@@ -220,8 +221,8 @@ a {
   align-items: stretch;
   min-height: calc(100vh - 180px);
   transition:
-    grid-template-columns var(--ritual-phase-transition-duration) ease,
-    gap var(--ritual-phase-transition-duration) ease;
+    grid-template-columns var(--ritual-room-transition-duration) ease,
+    gap var(--ritual-room-transition-duration) ease;
 }
 
 .premiere-page[data-phase="SILENCE"] .premiere-main {
@@ -288,8 +289,8 @@ a {
 .video-presentation-shell {
   display: block;
   transition:
-    filter var(--ritual-phase-transition-duration) ease,
-    border-color var(--ritual-phase-transition-duration) ease;
+    filter var(--ritual-player-transition-duration) ease,
+    border-color var(--ritual-player-transition-duration) ease;
 }
 
 .video-presentation-shell[data-screen-visual-state="waiting-static"] {
@@ -439,21 +440,21 @@ a {
   animation-fill-mode: both;
 }
 
-.premiere-page[data-transition-kind="to-live"] .video-transition-overlay {
-  animation: ritual-black-pulse var(--ritual-phase-transition-duration) ease both;
+.video-presentation-shell[data-player-transition-kind="to-live"] .video-transition-overlay {
+  animation: ritual-black-pulse var(--ritual-player-transition-duration) ease both;
 }
 
-.premiere-page[data-transition-kind="to-silence"] .video-transition-overlay {
-  animation: ritual-fade-to-black var(--ritual-phase-transition-duration) ease both;
+.video-presentation-shell[data-player-transition-kind="to-silence"] .video-transition-overlay {
+  animation: ritual-fade-to-black var(--ritual-player-transition-duration) ease both;
 }
 
-.premiere-page[data-transition-kind="to-discussion"] .video-transition-overlay,
-.premiere-page[data-transition-kind="to-closed"] .video-transition-overlay {
-  animation: ritual-black-reveal var(--ritual-phase-transition-duration) ease both;
+.video-presentation-shell[data-player-transition-kind="to-discussion"] .video-transition-overlay,
+.video-presentation-shell[data-player-transition-kind="to-closed"] .video-transition-overlay {
+  animation: ritual-black-reveal var(--ritual-player-transition-duration) ease both;
 }
 
-.premiere-page[data-transition-kind="to-silence"] .video-blackout {
-  animation: ritual-blackout-in var(--ritual-phase-transition-duration) ease both;
+.video-presentation-shell[data-player-transition-kind="to-silence"] .video-blackout {
+  animation: ritual-blackout-in var(--ritual-player-transition-duration) ease both;
 }
 
 .video-controls {
@@ -707,8 +708,8 @@ a {
   text-align: center;
   pointer-events: none;
   transition:
-    opacity var(--ritual-phase-transition-duration) ease,
-    background var(--ritual-phase-transition-duration) ease;
+    opacity var(--ritual-player-transition-duration) ease,
+    background var(--ritual-player-transition-duration) ease;
 }
 
 .video-waiting-title {
@@ -855,14 +856,14 @@ a {
     transform: scale(1.12);
   }
 
-  .premiere-page[data-transition-kind="to-live"] .video-transition-overlay {
+  .video-presentation-shell[data-player-transition-kind="to-live"] .video-transition-overlay {
     animation: none;
   }
 
-  .premiere-page[data-transition-kind="to-silence"] .video-blackout,
-  .premiere-page[data-transition-kind="to-silence"] .video-transition-overlay,
-  .premiere-page[data-transition-kind="to-discussion"] .video-transition-overlay,
-  .premiere-page[data-transition-kind="to-closed"] .video-transition-overlay {
+  .video-presentation-shell[data-player-transition-kind="to-silence"] .video-blackout,
+  .video-presentation-shell[data-player-transition-kind="to-silence"] .video-transition-overlay,
+  .video-presentation-shell[data-player-transition-kind="to-discussion"] .video-transition-overlay,
+  .video-presentation-shell[data-player-transition-kind="to-closed"] .video-transition-overlay {
     animation: none;
   }
 }
@@ -922,11 +923,11 @@ a {
   display: flex;
   flex-direction: column;
   transition:
-    opacity var(--ritual-phase-transition-duration) ease,
-    filter var(--ritual-phase-transition-duration) ease,
-    transform var(--ritual-phase-transition-duration) ease,
-    border-color var(--ritual-phase-transition-duration) ease,
-    box-shadow var(--ritual-phase-transition-duration) ease;
+    opacity var(--ritual-room-transition-duration) ease,
+    filter var(--ritual-room-transition-duration) ease,
+    transform var(--ritual-room-transition-duration) ease,
+    border-color var(--ritual-room-transition-duration) ease,
+    box-shadow var(--ritual-room-transition-duration) ease;
 }
 
 .chat-drawer[data-chat-visual-state="dimmed"] {

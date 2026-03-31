@@ -153,6 +153,8 @@ type VideoDiagnostics = {
   footerDisplayState: string | null;
   playerFullscreen: string | null;
   screenVisualState: string | null;
+  playerPhaseVisualState: string | null;
+  playerTransitionKind: string | null;
   fullscreenElementTestId: string | null;
 };
 
@@ -273,6 +275,10 @@ async function readVideoDiagnostics(page: Page): Promise<VideoDiagnostics> {
         footerDisplayState,
         playerFullscreen: playerShell?.getAttribute("data-player-fullscreen") ?? null,
         screenVisualState: playerShell?.getAttribute("data-screen-visual-state") ?? null,
+        playerPhaseVisualState:
+          playerShell?.getAttribute("data-player-phase-visual-state") ?? null,
+        playerTransitionKind:
+          playerShell?.getAttribute("data-player-transition-kind") ?? null,
         fullscreenElementTestId: fullscreenElement?.getAttribute("data-testid") ?? null,
       };
     }
@@ -290,6 +296,10 @@ async function readVideoDiagnostics(page: Page): Promise<VideoDiagnostics> {
       footerDisplayState,
       playerFullscreen: playerShell?.getAttribute("data-player-fullscreen") ?? null,
       screenVisualState: playerShell?.getAttribute("data-screen-visual-state") ?? null,
+      playerPhaseVisualState:
+        playerShell?.getAttribute("data-player-phase-visual-state") ?? null,
+      playerTransitionKind:
+        playerShell?.getAttribute("data-player-transition-kind") ?? null,
       fullscreenElementTestId: fullscreenElement?.getAttribute("data-testid") ?? null,
     };
   });
@@ -315,6 +325,8 @@ async function attachDiagnostics(
     footerDisplayState: null,
     playerFullscreen: null,
     screenVisualState: null,
+    playerPhaseVisualState: null,
+    playerTransitionKind: null,
     fullscreenElementTestId: null,
   }));
 
@@ -926,7 +938,9 @@ async function assertPlayerFullscreenToggle(
           const snapshot = await readVideoDiagnostics(page);
           return (
             snapshot.playerFullscreen === "true" &&
-            snapshot.fullscreenElementTestId === "player-presentation-shell"
+            snapshot.fullscreenElementTestId === "player-presentation-shell" &&
+            snapshot.playerPhaseVisualState !== null &&
+            snapshot.playerTransitionKind !== null
           );
         },
         {
@@ -950,7 +964,9 @@ async function assertPlayerFullscreenToggle(
           const snapshot = await readVideoDiagnostics(page);
           return (
             snapshot.playerFullscreen === "false" &&
-            snapshot.fullscreenElementTestId === null
+            snapshot.fullscreenElementTestId === null &&
+            snapshot.playerPhaseVisualState !== null &&
+            snapshot.playerTransitionKind !== null
           );
         },
         {

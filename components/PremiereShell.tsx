@@ -23,11 +23,9 @@ import {
 import {
   badgeClassNameForPhase,
   chatVisualStateForPhase,
-  RITUAL_PHASE_TRANSITION_DURATION_MS,
-  transitionKindForPhases,
-  type PhaseTransitionKind,
-  type PhaseVisualState,
+  ROOM_PHASE_TRANSITION_DURATION_MS,
 } from "@/lib/premiere/presentation";
+import { usePhaseTransition } from "@/lib/premiere/use-phase-transition";
 import type { PremierePhase, RoomBootstrap } from "@/lib/premiere/types";
 import { formatUnixDateTime } from "@/lib/premiereConfig";
 import type { ChannelHealthStatus } from "@/lib/chat/realtime";
@@ -39,8 +37,8 @@ type PremiereShellProps = {
 };
 
 const syncDebugEnabled = process.env.NEXT_PUBLIC_SYNC_DEBUG === "true";
-const phaseTransitionStyle = {
-  "--ritual-phase-transition-duration": `${RITUAL_PHASE_TRANSITION_DURATION_MS}ms`,
+const roomTransitionStyle = {
+  "--ritual-room-transition-duration": `${ROOM_PHASE_TRANSITION_DURATION_MS}ms`,
 } as CSSProperties;
 
 function countdownLabelForPhase(phase: PremierePhase): string | null {
@@ -69,16 +67,11 @@ export default function PremiereShell({ room, initialBootstrap }: PremiereShellP
   );
   const [clockMs, setClockMs] = useState(() => Date.now());
   const [mobileChatOpen, setMobileChatOpen] = useState(false);
-  const [phaseVisualState, setPhaseVisualState] =
-    useState<PhaseVisualState>("steady");
-  const [transitionKind, setTransitionKind] =
-    useState<PhaseTransitionKind>("none");
   const [syncDebugState, setSyncDebugState] = useState<VideoSyncDebugState | null>(
     null,
   );
   const [channelStatus, setChannelStatus] =
     useState<ChannelHealthStatus>("DISCONNECTED");
-  const previousPhaseRef = useRef<PremierePhase>(initialBootstrap.phase);
 
   const screening = bootstrap.screening;
   const phase = useMemo<PremierePhase>(() => {
@@ -93,6 +86,10 @@ export default function PremiereShell({ room, initialBootstrap }: PremiereShellP
   const chatOpen = Boolean(screening && hasAccess && isChatOpenForPhase(phase));
   const chatVisualState = chatVisualStateForPhase(phase);
   const useHlsPlayer = screening?.videoProvider === "hls";
+  const { phaseVisualState, transitionKind } = usePhaseTransition(
+    phase,
+    ROOM_PHASE_TRANSITION_DURATION_MS,
+  );
 
   const refreshBootstrap = useCallback(async (): Promise<RoomBootstrap | null> => {
     const response = await fetch(`/api/rooms/${room}/bootstrap`, {
@@ -185,29 +182,6 @@ export default function PremiereShell({ room, initialBootstrap }: PremiereShellP
   }, [mounted, refreshServerTime]);
 
   useEffect(() => {
-    const previousPhase = previousPhaseRef.current;
-    if (previousPhase === phase) {
-      return;
-    }
-
-    previousPhaseRef.current = phase;
-    const nextTransitionKind = transitionKindForPhases(previousPhase, phase);
-    if (nextTransitionKind === "none") {
-      setTransitionKind("none");
-      setPhaseVisualState("steady");
-      return;
-    }
-
-    setTransitionKind(nextTransitionKind);
-    setPhaseVisualState("transitioning");
-    const timer = window.setTimeout(() => {
-      setTransitionKind("none");
-      setPhaseVisualState("steady");
-    }, RITUAL_PHASE_TRANSITION_DURATION_MS);
-    return () => window.clearTimeout(timer);
-  }, [phase]);
-
-  useEffect(() => {
     if (chatVisualState === "hidden") {
       setMobileChatOpen(false);
     }
@@ -224,7 +198,7 @@ export default function PremiereShell({ room, initialBootstrap }: PremiereShellP
       data-phase={phase}
       data-phase-visual-state={phaseVisualState}
       data-transition-kind={transitionKind}
-      style={phaseTransitionStyle}
+      style={roomTransitionStyle}
     >
       <header className="premiere-header slide-in">
         <div>

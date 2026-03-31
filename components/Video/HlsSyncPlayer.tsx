@@ -2,6 +2,7 @@
 
 import {
   forwardRef,
+  type CSSProperties,
   type FocusEvent,
   type PointerEvent,
   useCallback,
@@ -29,6 +30,7 @@ import type {
 } from "@/components/Video/types";
 import { clampPlaybackTargetSec } from "@/lib/premiere/phase";
 import {
+  PLAYER_PHASE_TRANSITION_DURATION_MS,
   isPlaybackSurfacePhase,
   screenVisualStateForPhase,
 } from "@/lib/premiere/presentation";
@@ -37,6 +39,7 @@ import type {
   RoomBootstrap,
   ScreeningConfig,
 } from "@/lib/premiere/types";
+import { usePhaseTransition } from "@/lib/premiere/use-phase-transition";
 import {
   HlsPlaybackAdapter,
   type HlsAdapterLifecycleDebug,
@@ -71,6 +74,9 @@ const GESTURE_OVERLAY_EXIT_MS = 240;
 const PLAYER_CHROME_IDLE_TIMEOUT_MS = 3000;
 const shouldExposeHlsE2EProbe =
   process.env.NODE_ENV !== "production" || process.env.NEXT_PUBLIC_E2E === "1";
+const playerTransitionStyle = {
+  "--ritual-player-transition-duration": `${PLAYER_PHASE_TRANSITION_DURATION_MS}ms`,
+} as CSSProperties;
 
 type HlsSyncPlayerProps = {
   room: string;
@@ -3288,6 +3294,10 @@ const HlsSyncPlayer = forwardRef<VideoSyncPlayerHandle, HlsSyncPlayerProps>(
       phase,
       Boolean(posterImageUrl),
     );
+    const {
+      phaseVisualState: playerPhaseVisualState,
+      transitionKind: playerTransitionKind,
+    } = usePhaseTransition(phase, PLAYER_PHASE_TRANSITION_DURATION_MS);
     const isPrimingNeeded = requiresPriming && !isPrimed;
     const isGestureRequired =
       showPlaybackSurface &&
@@ -3542,8 +3552,11 @@ const HlsSyncPlayer = forwardRef<VideoSyncPlayerHandle, HlsSyncPlayerProps>(
             data-testid="player-presentation-shell"
             data-phase={phase}
             data-screen-visual-state={screenVisualState}
+            data-player-phase-visual-state={playerPhaseVisualState}
+            data-player-transition-kind={playerTransitionKind}
             data-player-fullscreen={String(isPresentationFullscreen)}
             data-player-chrome-visible={String(playerChromeVisible)}
+            style={playerTransitionStyle}
             onPointerEnter={handlePlayerShellPointerEnter}
             onPointerMove={handlePlayerShellPointerMove}
             onPointerDownCapture={handlePlayerShellPointerDownCapture}

@@ -2,6 +2,7 @@
 
 import {
   forwardRef,
+  type CSSProperties,
   useCallback,
   useEffect,
   useImperativeHandle,
@@ -10,9 +11,11 @@ import {
 } from "react";
 import { clampPlaybackTargetSec } from "@/lib/premiere/phase";
 import {
+  PLAYER_PHASE_TRANSITION_DURATION_MS,
   isPlaybackSurfacePhase,
   screenVisualStateForPhase,
 } from "@/lib/premiere/presentation";
+import { usePhaseTransition } from "@/lib/premiere/use-phase-transition";
 import type { PremierePhase, ScreeningConfig } from "@/lib/premiere/types";
 import type {
   VideoSyncDebugState,
@@ -26,6 +29,9 @@ const SOFT_CORRECTION_WINDOW_MS = 5000;
 const HARD_SEEK_THRESHOLD_SEC = 2;
 const DEFAULT_SOFT_THRESHOLD_SEC = 0.25;
 const NO_RATE_SOFT_THRESHOLD_SEC = 0.5;
+const playerTransitionStyle = {
+  "--ritual-player-transition-duration": `${PLAYER_PHASE_TRANSITION_DURATION_MS}ms`,
+} as CSSProperties;
 
 type VideoSyncPlayerProps = {
   room: string;
@@ -354,6 +360,10 @@ const VideoSyncPlayer = forwardRef<VideoSyncPlayerHandle, VideoSyncPlayerProps>(
       phase,
       Boolean(posterImageUrl),
     );
+    const {
+      phaseVisualState: playerPhaseVisualState,
+      transitionKind: playerTransitionKind,
+    } = usePhaseTransition(phase, PLAYER_PHASE_TRANSITION_DURATION_MS);
 
     return (
       <div className="video-shell">
@@ -372,7 +382,10 @@ const VideoSyncPlayer = forwardRef<VideoSyncPlayerHandle, VideoSyncPlayerProps>(
             data-testid="player-presentation-shell"
             data-phase={phase}
             data-screen-visual-state={screenVisualState}
+            data-player-phase-visual-state={playerPhaseVisualState}
+            data-player-transition-kind={playerTransitionKind}
             data-player-fullscreen="false"
+            style={playerTransitionStyle}
           >
             {showPlaybackSurface ? (
               <div className="video-playback-layer">

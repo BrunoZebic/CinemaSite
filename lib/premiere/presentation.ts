@@ -1,7 +1,8 @@
 import type { PremierePhase } from "@/lib/premiere/types";
 
+export const ROOM_PHASE_TRANSITION_DURATION_MS = 650;
 // Intentionally exaggerated on the UI branch so phase-shift animations are easy to verify.
-export const RITUAL_PHASE_TRANSITION_DURATION_MS = 5000;
+export const PLAYER_PHASE_TRANSITION_DURATION_MS = 5000;
 
 export type PhaseVisualState = "steady" | "transitioning";
 export type PhaseTransitionKind =
