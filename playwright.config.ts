@@ -1,4 +1,7 @@
 import { defineConfig } from "@playwright/test";
+import { SCENARIOS } from "./lib/harness/scenarios";
+
+const roomE2eSpecs = Object.values(SCENARIOS).map((s) => s.spec);
 
 const ROOM_BASE_URL =
   process.env.HLS_TEST_BASE_URL?.trim() ||
@@ -44,10 +47,7 @@ export default defineConfig({
     },
     {
       name: "room-e2e-chromium",
-      testMatch: [
-        "tests/hls/room-playback.spec.ts",
-        "tests/hls/phase-transition-ui.spec.ts",
-      ],
+      testMatch: roomE2eSpecs,
       fullyParallel: false,
       workers: 1,
       use: {
@@ -61,10 +61,7 @@ export default defineConfig({
     },
     {
       name: "room-e2e-webkit",
-      testMatch: [
-        "tests/hls/room-playback.spec.ts",
-        "tests/hls/phase-transition-ui.spec.ts",
-      ],
+      testMatch: roomE2eSpecs,
       fullyParallel: false,
       workers: 1,
       use: {
