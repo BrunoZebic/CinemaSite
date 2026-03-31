@@ -1,7 +1,7 @@
 import { writeFile } from "node:fs/promises";
 import { expect, test, type Page, type TestInfo } from "@playwright/test";
-import { loadLocalEnv } from "../../scripts/hls/env";
 import { buildAuthKeySet, redactUnknown } from "../../scripts/hls/redact";
+import { loadHarnessContext } from "../../scripts/hls/context";
 import {
   captureGestureProofBaseline,
   evaluateGestureProofAfterClick,
@@ -11,19 +11,8 @@ import {
   type GestureProofEvaluation,
 } from "./room-gesture-proof";
 
-loadLocalEnv();
-
+const { room: ROOM, baseUrl: BASE_URL, inviteCode: INVITE_CODE } = loadHarnessContext();
 const AUTH_KEYS = buildAuthKeySet(process.env.HLS_AUTH_KEYS_EXTRA ?? null);
-const ROOM =
-  process.env.HLS_TEST_ROOM?.trim() ?? process.env.HLS_E2E_ROOM?.trim() ?? "demo";
-const BASE_URL =
-  process.env.HLS_TEST_BASE_URL?.trim() ??
-  process.env.HLS_E2E_BASE_URL?.trim() ??
-  "http://localhost:3100";
-const INVITE_CODE =
-  process.env.HLS_TEST_INVITE_CODE?.trim() ??
-  process.env.HLS_E2E_INVITE_CODE?.trim() ??
-  "";
 const IDLE_DELAY_MS = Number(process.env.HLS_E2E_IDLE_DELAY_MS ?? 10_000);
 const STABILITY_WINDOW_MS = Number(process.env.HLS_E2E_STABILITY_WINDOW_MS ?? 10_000);
 const STARTUP_PRE_GATE_TIMEOUT_MS = Number(

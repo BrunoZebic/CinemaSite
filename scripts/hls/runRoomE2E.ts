@@ -2,7 +2,8 @@ import { pathToFileURL } from "node:url";
 import { spawn } from "node:child_process";
 import path from "node:path";
 import { getStringFlag, parseArgs } from "./args";
-import { loadLocalEnv } from "./env";
+import { loadHarnessContext } from "./context";
+import { SCENARIOS } from "../../lib/harness/scenarios";
 
 function isMainModule(): boolean {
   const entry = process.argv[1];
@@ -22,33 +23,21 @@ function shouldUseLocalWebServer(baseUrl: string): boolean {
 }
 
 async function main(): Promise<void> {
-  loadLocalEnv();
+  const ctx = loadHarnessContext();
   const args = parseArgs(process.argv.slice(2));
-  const room =
-    getStringFlag(args.flags, "room") ??
-    process.env.HLS_TEST_ROOM?.trim() ??
-    process.env.HLS_E2E_ROOM?.trim() ??
-    "demo";
-  const baseUrl =
-    getStringFlag(args.flags, "base-url") ??
-    process.env.HLS_TEST_BASE_URL?.trim() ??
-    process.env.HLS_E2E_BASE_URL?.trim() ??
-    "http://localhost:3100";
-  const inviteCode =
-    getStringFlag(args.flags, "invite-code") ??
-    process.env.HLS_TEST_INVITE_CODE?.trim() ??
-    process.env.HLS_E2E_INVITE_CODE?.trim() ??
-    "";
+  const room = getStringFlag(args.flags, "room") ?? ctx.room;
+  const baseUrl = getStringFlag(args.flags, "base-url") ?? ctx.baseUrl;
+  const inviteCode = getStringFlag(args.flags, "invite-code") ?? ctx.inviteCode;
   const project =
     getStringFlag(args.flags, "project") ??
     process.env.HLS_TEST_PROJECT?.trim() ??
     process.env.HLS_E2E_PROJECT?.trim() ??
-    "room-e2e-chromium";
+    SCENARIOS.roomPlayback.project;
   const spec =
     getStringFlag(args.flags, "spec") ??
     process.env.HLS_TEST_SPEC?.trim() ??
     process.env.HLS_E2E_SPEC?.trim() ??
-    "tests/hls/room-playback.spec.ts";
+    SCENARIOS.roomPlayback.spec;
 
   if (!inviteCode) {
     throw new Error("Missing HLS_TEST_INVITE_CODE.");

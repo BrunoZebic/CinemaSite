@@ -1,27 +1,23 @@
-import { writeFile } from "node:fs/promises";
-import { expect, test, type BrowserContext, type Page, type TestInfo } from "@playwright/test";
-import { loadLocalEnv } from "../../scripts/hls/env";
-import { buildAuthKeySet, redactUnknown } from "../../scripts/hls/redact";
+import { expect, test, type BrowserContext, type Page } from "@playwright/test";
+import { buildAuthKeySet } from "../../scripts/hls/redact";
+import { loadHarnessContext } from "../../scripts/hls/context";
 import {
   getCiRoomConfig,
   resetCiRoomStart,
   setCiRoomPosterImage,
   type CiRoomConfig,
 } from "../../scripts/hls/ciRoomHelper";
+import type {
+  PhaseUiSnapshot,
+  PhaseTransitionKind,
+  PremierePhase,
+} from "../../lib/harness/probe-contract";
+import { readPhaseUiSnapshot } from "./support/probe";
+import { attachDiagnostics } from "./support/artifacts";
+import { grantInviteAccess, seedIdentityBeforeNavigation } from "./support/access";
 
-loadLocalEnv();
-
+const { room: ROOM, baseUrl: BASE_URL, inviteCode: INVITE_CODE } = loadHarnessContext();
 const AUTH_KEYS = buildAuthKeySet(process.env.HLS_AUTH_KEYS_EXTRA ?? null);
-const ROOM =
-  process.env.HLS_TEST_ROOM?.trim() ?? process.env.HLS_E2E_ROOM?.trim() ?? "demo";
-const BASE_URL =
-  process.env.HLS_TEST_BASE_URL?.trim() ??
-  process.env.HLS_E2E_BASE_URL?.trim() ??
-  "http://localhost:3100";
-const INVITE_CODE =
-  process.env.HLS_TEST_INVITE_CODE?.trim() ??
-  process.env.HLS_E2E_INVITE_CODE?.trim() ??
-  "";
 const WAITING_TO_LIVE_OFFSET_SEC = 60;
 const SILENCE_LEAD_SEC = 45;
 const DISCUSSION_LEAD_SEC = 8;
@@ -40,56 +36,6 @@ const PHASE_IDENTITY = {
 };
 const PHASE_SIGNATURE = "phasetester::phase-e2e-seed";
 
-type PhaseProbeState = {
-  playbackStartState?: string;
-  isPrimed?: boolean;
-};
-
-type PhaseName = "WAITING" | "LIVE" | "SILENCE" | "DISCUSSION" | "CLOSED";
-type PhaseTransitionKind =
-  | "none"
-  | "to-live"
-  | "to-silence"
-  | "to-discussion"
-  | "to-closed";
-type PhaseVisualState = "steady" | "transitioning";
-type ScreenVisualState =
-  | "waiting-static"
-  | "live-motion"
-  | "silence-black"
-  | "discussion-poster"
-  | "discussion-static"
-  | "closed-poster"
-  | "closed-static";
-type ChatVisualState = "dimmed" | "hidden" | "bright" | "muted";
-
-type PhaseUiSnapshot = {
-  phase: PhaseName | null;
-  countdownLabel: string | null;
-  shellPhase: PhaseName | null;
-  phaseVisualState: PhaseVisualState | null;
-  transitionKind: PhaseTransitionKind | null;
-  playerPhaseVisualState: PhaseVisualState | null;
-  playerTransitionKind: PhaseTransitionKind | null;
-  chatOpen: string | null;
-  chatPhase: string | null;
-  chatVisualState: ChatVisualState | null;
-  screenVisualState: ScreenVisualState | null;
-  playerFullscreen: string | null;
-  waitingLobbyVisible: boolean;
-  silenceBlackoutVisible: boolean;
-  gestureVisible: boolean;
-  recoveryRetryVisible: boolean;
-  subtitleToggleVisible: boolean;
-  posterVisible: boolean;
-  staticTreatmentVisible: boolean;
-  footerDisplayState: string | null;
-  footerText: string;
-  composerDisabled: boolean;
-  inviteVisible: boolean;
-  identityVisible: boolean;
-  probe: PhaseProbeState | null;
-};
 
 type WaitingBranch = "gesture_required" | "gesture_not_required";
 type LiveEntryBranch = "gesture_required" | "gesture_not_required";
@@ -109,37 +55,9 @@ function roomMessagesUrl(): string {
   return `${BASE_URL.replace(/\/+$/, "")}/api/rooms/${encodeURIComponent(ROOM)}/messages`;
 }
 
-async function seedIdentityBeforeNavigation(page: Page): Promise<void> {
-  await page.addInitScript(
-    ({ storageKey, identity }) => {
-      window.localStorage.removeItem(storageKey);
-      window.localStorage.setItem(storageKey, JSON.stringify(identity));
-    },
-    {
-      storageKey: IDENTITY_STORAGE_KEY,
-      identity: PHASE_IDENTITY,
-    },
-  );
-}
-
-async function grantInviteAccess(context: BrowserContext): Promise<void> {
-  const response = await context.request.post(roomAccessUrl(), {
-    data: {
-      inviteCode: INVITE_CODE,
-    },
-  });
-
-  if (!response.ok()) {
-    const payload = await response.text().catch(() => "");
-    throw new Error(
-      `Failed to obtain invite access for room "${ROOM}" (status ${response.status()}): ${payload}`,
-    );
-  }
-}
-
 async function openPhaseRoom(page: Page, context: BrowserContext): Promise<void> {
-  await seedIdentityBeforeNavigation(page);
-  await grantInviteAccess(context);
+  await seedIdentityBeforeNavigation(page, PHASE_IDENTITY, IDENTITY_STORAGE_KEY);
+  await grantInviteAccess(context, roomAccessUrl(), INVITE_CODE);
   await page.goto(roomUrl(), {
     waitUntil: "domcontentloaded",
   });
@@ -154,122 +72,6 @@ async function openPhaseRoom(page: Page, context: BrowserContext): Promise<void>
   });
 }
 
-async function readPhaseUiSnapshot(page: Page): Promise<PhaseUiSnapshot> {
-  return page.evaluate(() => {
-    function isVisible(element: Element | null): boolean {
-      if (!(element instanceof HTMLElement)) {
-        return false;
-      }
-
-      const styles = window.getComputedStyle(element);
-      if (styles.display === "none" || styles.visibility === "hidden") {
-        return false;
-      }
-
-      return Boolean(element.offsetWidth || element.offsetHeight || element.getClientRects().length);
-    }
-
-    const shell = document.querySelector('[data-testid="premiere-shell"]');
-    const phaseBadge = document.querySelector('[data-testid="phase-badge"]');
-    const countdown = document.querySelector('[data-testid="phase-countdown"]');
-    const chatPanel = document.querySelector('[data-testid="chat-panel"]');
-    const playerShell = document.querySelector('[data-testid="player-presentation-shell"]');
-    const waitingLobby = document.querySelector('[data-testid="waiting-lobby-overlay"]');
-    const silenceBlackout = document.querySelector('[data-testid="silence-blackout"]');
-    const gestureButton = document.querySelector('[data-testid="gesture-play-cta"]');
-    const recoveryRetry = document.querySelector('[data-testid="recovery-retry"]');
-    const subtitleToggle = document.querySelector('[data-testid="subtitle-toggle"]');
-    const posterImage = document.querySelector('[data-testid="phase-poster-image"]');
-    const staticTreatment = document.querySelector('[data-testid="phase-static-treatment"]');
-    const footer = document.querySelector('[data-testid="video-status-note"]');
-    const composerInput = document.querySelector(
-      '[data-testid="chat-composer-input"]',
-    ) as HTMLTextAreaElement | null;
-    const inviteInput = document.querySelector('[data-testid="invite-code-input"]');
-    const identityInput = document.querySelector('[data-testid="identity-nickname-input"]');
-    const probe = (
-      window as unknown as { __HLS_E2E_PROBE__?: PhaseProbeState }
-    ).__HLS_E2E_PROBE__;
-
-    return {
-      phase: (phaseBadge?.getAttribute("data-phase") as PhaseName | null) ?? null,
-      countdownLabel: countdown?.getAttribute("data-countdown-label") ?? null,
-      shellPhase: (shell?.getAttribute("data-phase") as PhaseName | null) ?? null,
-      phaseVisualState:
-        (shell?.getAttribute("data-phase-visual-state") as PhaseVisualState | null) ??
-        null,
-      transitionKind:
-        (shell?.getAttribute("data-transition-kind") as PhaseTransitionKind | null) ??
-        null,
-      playerPhaseVisualState:
-        (playerShell?.getAttribute("data-player-phase-visual-state") as PhaseVisualState | null) ??
-        null,
-      playerTransitionKind:
-        (playerShell?.getAttribute("data-player-transition-kind") as PhaseTransitionKind | null) ??
-        null,
-      chatOpen: chatPanel?.getAttribute("data-chat-open") ?? null,
-      chatPhase: chatPanel?.getAttribute("data-chat-phase") ?? null,
-      chatVisualState:
-        (chatPanel?.getAttribute("data-chat-visual-state") as ChatVisualState | null) ??
-        null,
-      screenVisualState:
-        (playerShell?.getAttribute("data-screen-visual-state") as ScreenVisualState | null) ??
-        null,
-      playerFullscreen: playerShell?.getAttribute("data-player-fullscreen") ?? null,
-      waitingLobbyVisible: isVisible(waitingLobby),
-      silenceBlackoutVisible: isVisible(silenceBlackout),
-      gestureVisible: isVisible(gestureButton),
-      recoveryRetryVisible: isVisible(recoveryRetry),
-      subtitleToggleVisible: isVisible(subtitleToggle),
-      posterVisible: isVisible(posterImage),
-      staticTreatmentVisible: isVisible(staticTreatment),
-      footerDisplayState: footer?.getAttribute("data-footer-display-state") ?? null,
-      footerText: footer?.textContent?.trim() ?? "",
-      composerDisabled: composerInput?.disabled ?? true,
-      inviteVisible: isVisible(inviteInput),
-      identityVisible: isVisible(identityInput),
-      probe: probe ?? null,
-    };
-  });
-}
-
-async function attachDiagnostics(
-  page: Page,
-  testInfo: TestInfo,
-  reason: string,
-): Promise<void> {
-  const [snapshot, roomConfig] = await Promise.all([
-    readPhaseUiSnapshot(page).catch(() => null),
-    getCiRoomConfig(ROOM).catch((error: unknown) => {
-      if (error instanceof Error) {
-        return { error: error.message };
-      }
-      return { error: String(error) };
-    }),
-  ]);
-
-  const safePayload = redactUnknown(
-    {
-      reason,
-      room: ROOM,
-      pageUrl: page.url(),
-      snapshot,
-      roomConfig,
-    },
-    AUTH_KEYS,
-  );
-  const body = JSON.stringify(safePayload, null, 2);
-
-  await testInfo.attach("phase-transition-diagnostics", {
-    body,
-    contentType: "application/json",
-  });
-  await writeFile(
-    testInfo.outputPath("phase-transition-diagnostics.json"),
-    body,
-    "utf8",
-  );
-}
 
 async function assertInitialPhaseState(
   page: Page,
@@ -336,7 +138,7 @@ async function waitForTransitionKind(
 
 async function waitForSteadyPhase(
   page: Page,
-  expectedPhase: PhaseName,
+  expectedPhase: PremierePhase,
 ): Promise<PhaseUiSnapshot> {
   await expect
     .poll(
@@ -497,7 +299,7 @@ test.beforeEach(async ({ context }) => {
 
 test.afterEach(async ({ page }, testInfo) => {
   if (testInfo.status !== testInfo.expectedStatus) {
-    await attachDiagnostics(page, testInfo, "Phase transition test failed.");
+    await attachDiagnostics(page, testInfo, "Phase transition test failed.", ROOM, AUTH_KEYS);
   }
 });
 
