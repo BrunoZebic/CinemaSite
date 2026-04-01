@@ -5,6 +5,8 @@
   "scripts": {
     "dev": "next dev",
     "build": "next build",
+    "build:clean:win": "powershell -ExecutionPolicy Bypass -File .\\scripts\\safe-clean-build.ps1",
+    "build:clean:win:force": "powershell -ExecutionPolicy Bypass -File .\\scripts\\safe-clean-build.ps1 -ForceStopNode",
     "start": "next start",
     "lint": "eslint",
     "test:hls:unit": "tsx --test tests/hls/unit/*.test.ts",
